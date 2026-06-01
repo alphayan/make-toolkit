@@ -78,6 +78,7 @@ echo "vendor_files() {" >> "$OUT"
 echo '  mkdir -p "$DEST/scripts"' >> "$OUT"
 emit() {
   local rel="$1" src="$2"
+  # 注:echo 末尾换行经 tr 变为 marker 尾部 '_';勿改成 printf '%s' 否则标记不一致
   local marker="MTK_EOF_$(echo "$rel" | tr -c 'A-Za-z0-9' '_')"
   {
     echo "  mkdir -p \"\$(dirname \"\$DEST/$rel\")\""
@@ -110,5 +111,6 @@ mtk_update_gitignore "$TARGET"
 mtk_show_result "$TARGET"
 FOOTER
 
+bash -n "$OUT" || { echo "生成的 install.sh 语法有误,生成中止" >&2; exit 1; }
 chmod +x "$OUT"
 echo "已生成 $OUT ($(wc -l < "$OUT" | tr -d ' ') 行)"

@@ -12,7 +12,7 @@ ICON_INFO="[INFO]"; ICON_OK="[OK]"; ICON_WARN="[WARN]"; ICON_ERR="[ERROR]"; ICON
 
 # 判定颜色模式并填充颜色/图标变量。
 ui_init_colors() {
-    if [[ "${MTK_NO_COLOR:-0}" == "1" || -n "${NO_COLOR:-}" || "${TERM:-dumb}" == "dumb" || ! -t 1 ]]; then
+    if [[ "${MTK_NO_COLOR:-0}" == "1" || -n "${NO_COLOR+x}" || "${TERM:-dumb}" == "dumb" || ! -t 1 ]]; then
         MTK_COLOR_MODE="none"
     elif [[ "${COLORTERM:-}" == "truecolor" || "${COLORTERM:-}" == "24bit" ]]; then
         MTK_COLOR_MODE="truecolor"
@@ -85,8 +85,9 @@ run_with_spinner() {
     local tmp rc; tmp="$(mktemp)"
     if [[ "$MTK_COLOR_MODE" == "none" || ! -t 1 ]]; then
         printf '%s... ' "$desc"
-        if "$@" >"$tmp" 2>&1; then printf 'done\n'; rc=0
-        else rc=$?; printf 'failed\n'; cat "$tmp"; fi
+        "$@" >"$tmp" 2>&1 &
+        wait $! && rc=0 || rc=$?
+        if [[ $rc -eq 0 ]]; then printf 'done\n'; else printf 'failed\n'; cat "$tmp"; fi
         rm -f "$tmp"; return $rc
     fi
     local frames='|/-\' i=0 pid
@@ -97,7 +98,7 @@ run_with_spinner() {
         i=$(( (i + 1) % 4 ))
         sleep 0.1
     done
-    wait "$pid"; rc=$?
+    wait "$pid" && rc=0 || rc=$?
     if [[ $rc -eq 0 ]]; then
         printf '\r%s%s%s %s\n' "$C_OK" "$ICON_OK" "$C_RESET" "$desc"
     else
