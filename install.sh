@@ -163,10 +163,13 @@ export -f ui_init_colors ui_info ui_success ui_warn ui_error ui_stage ui_section
 
 set -e
 
-# 加载 UI 原语(同目录)。内嵌进 install.sh 时此文件不存在,守卫跳过,
+# 加载 UI 原语(同目录)。内嵌进 install.sh 或从 stdin 执行时守卫跳过,
 # 复用已就地定义的 ui_*;作为 vendor 文件时正常 source。
-_MK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/null || echo .)"
-if [[ -f "$_MK_DIR/ui.sh" ]]; then
+_MK_DIR=""
+if [[ ${#BASH_SOURCE[@]} -gt 0 && -n "${BASH_SOURCE[0]:-}" ]]; then
+    _MK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/null || echo .)"
+fi
+if [[ -n "$_MK_DIR" && -f "$_MK_DIR/ui.sh" ]]; then
     # shellcheck source=/dev/null
     source "$_MK_DIR/ui.sh"
     ui_init_colors
@@ -626,10 +629,13 @@ MTK_EOF_scripts_cloc_sh_
 
 set -e
 
-# 加载 UI 原语(同目录)。内嵌进 install.sh 时此文件不存在,守卫跳过,
+# 加载 UI 原语(同目录)。内嵌进 install.sh 或从 stdin 执行时守卫跳过,
 # 复用已就地定义的 ui_*;作为 vendor 文件时正常 source。
-_MK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/null || echo .)"
-if [[ -f "$_MK_DIR/ui.sh" ]]; then
+_MK_DIR=""
+if [[ ${#BASH_SOURCE[@]} -gt 0 && -n "${BASH_SOURCE[0]:-}" ]]; then
+    _MK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/null || echo .)"
+fi
+if [[ -n "$_MK_DIR" && -f "$_MK_DIR/ui.sh" ]]; then
     # shellcheck source=/dev/null
     source "$_MK_DIR/ui.sh"
     ui_init_colors
