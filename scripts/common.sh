@@ -6,34 +6,36 @@
 
 set -e
 
-# 颜色定义
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-NC='\033[0m'
+# 加载 UI 原语(同目录)。内嵌进 install.sh 时此文件不存在,守卫跳过,
+# 复用已就地定义的 ui_*;作为 vendor 文件时正常 source。
+_MK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/null || echo .)"
+if [[ -f "$_MK_DIR/ui.sh" ]]; then
+    # shellcheck source=/dev/null
+    source "$_MK_DIR/ui.sh"
+    ui_init_colors
+fi
 
-# 日志函数
-log_info() {
-    echo -e "${BLUE}[INFO]${NC} $1"
-}
+# 兼容旧调用点:log_* 转调 ui_*(无色降级时输出与历史一致)。
+log_info()    { ui_info "$@"; }
+log_success() { ui_success "$@"; }
+log_warning() { ui_warn "$@"; }
+log_error()   { ui_error "$@"; }
+log_step()    { ui_stage "$@"; }
 
-log_success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1"
-}
-
-log_warning() {
-    echo -e "${YELLOW}[WARNING]${NC} $1"
-}
-
-log_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
-}
-
-log_step() {
-    echo -e "${CYAN}[STEP]${NC} $1"
-}
+# ---- 工具清单:单一事实来源(供 ensure_* 与安装器 doctor 共用)----
+# bash 3.2 无关联数组,用 "字段|字段" 字符串数组。
+# MTK_GO_TOOLS 每项:binary|module|version|desc
+MTK_GO_TOOLS=(
+    "gofumpt|mvdan.cc/gofumpt|latest|格式化"
+    "goimports|golang.org/x/tools/cmd/goimports|latest|整理导入"
+    "golangci-lint|github.com/golangci/golangci-lint/cmd/golangci-lint|${GOLANGCI_LINT_VERSION:-v1.60.3}|质量检查(含 staticcheck/ineffassign)"
+    "govulncheck|golang.org/x/vuln/cmd/govulncheck|latest|漏洞扫描"
+)
+# MTK_SYS_TOOLS 每项:binary|brew_install_hint|optional(yes/no)|desc
+MTK_SYS_TOOLS=(
+    "trivy|brew install trivy|no|整仓/前端漏洞(可 docker 回退)"
+    "cloc|brew install cloc|yes|代码行数统计"
+)
 
 # 向 PATH 追加目录（若未包含）
 add_path_if_missing() {
@@ -198,3 +200,7 @@ export -f log_info log_success log_warning log_error log_step
 export -f add_path_if_missing contains_item ensure_go_tool
 export -f ensure_golangci_lint ensure_staticcheck ensure_ineffassign ensure_goimports ensure_gofumpt
 export -f get_project_root get_cpu_count discover_go_modules resolve_go_modules
+
+# 颜色别名:兼容直接使用 $RED/$GREEN/… 的旧脚本(run-tests.sh 等)
+RED=$C_ERR; GREEN=$C_OK; YELLOW=$C_WARN; BLUE=$C_INFO; CYAN=$C_ACCENT; NC=$C_RESET
+export RED GREEN YELLOW BLUE CYAN NC
