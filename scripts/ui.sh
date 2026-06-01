@@ -86,15 +86,15 @@ run_with_spinner() {
     if [[ "$MTK_COLOR_MODE" == "none" || ! -t 1 ]]; then
         printf '%s... ' "$desc"
         if "$@" >"$tmp" 2>&1; then printf 'done\n'; rc=0
-        else printf 'failed\n'; cat "$tmp"; rc=1; fi
+        else rc=$?; printf 'failed\n'; cat "$tmp"; fi
         rm -f "$tmp"; return $rc
     fi
     local frames='|/-\' i=0 pid
     "$@" >"$tmp" 2>&1 &
     pid=$!
     while kill -0 "$pid" 2>/dev/null; do
-        i=$(( (i + 1) % 4 ))
         printf '\r%s%s%s %s' "$C_ACCENT" "${frames:$i:1}" "$C_RESET" "$desc"
+        i=$(( (i + 1) % 4 ))
         sleep 0.1
     done
     wait "$pid"; rc=$?

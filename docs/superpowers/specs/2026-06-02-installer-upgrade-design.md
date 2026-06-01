@@ -67,7 +67,7 @@
 | `ui_info/ui_warn/ui_success/ui_error MSG` | 带图标状态行 | `[INFO]/[WARN]/[OK]/[ERROR] MSG` |
 | `ui_section TITLE` | 分节标题(着色 + 分隔) | 纯文本标题 |
 | `ui_stage MSG` | 步骤前缀(如 `▸`) | `- MSG` |
-| `ui_kv KEY VALUE` | 左对齐键 + 值 | `KEY: VALUE` |
+| `ui_kv KEY VALUE` | 左对齐键 + 值 | 缩进 + 键补空格对齐(无冒号) |
 | `ui_panel`(stdin 多行) | box-drawing 框线面板 | 两空格缩进 |
 | `run_with_spinner DESC -- CMD...` | tty 下后台跑命令 + 转圈;捕获 rc 与输出,失败回显 | 打印 `DESC… done` / `DESC… failed` 后回显输出 |
 | `ui_banner` | make-toolkit 色块 banner + tagline | 单行纯文本标题 |
