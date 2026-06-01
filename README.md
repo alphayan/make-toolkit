@@ -34,14 +34,20 @@
 # install.sh 是自包含单文件，可拷到任何机器 / 项目直接运行
 bash install.sh /path/to/your-project     # 省略目标则为当前目录
 bash install.sh --into tools/mtk DIR       # 自定义 vendor 子目录（默认 make-toolkit）
+bash install.sh --no-color DIR             # 关闭彩色输出（CI / 重定向自动也会降级）
+bash install.sh --skip-doctor DIR          # 跳过装前环境自检
 ```
 
-它会：把 `quality.mk` + `scripts/` 拷进 `your-project/make-toolkit/`；在项目 `Makefile`
-接入 `include make-toolkit/quality.mk`（无 Makefile 则新建，已有则在末尾追加、不动你原有目标）；
-把 `coverage_results/`、`.build-cache/` 加进 `.gitignore`。可重复运行以更新脚本（幂等）。
+运行时它会：
 
-> `install.sh` 由 `build-installer.sh` 从本仓库源文件生成；改了 `quality.mk` / `scripts/`
-> 后重跑 `bash build-installer.sh` 重新打包即可。
+1. **装前自检（doctor）**：检测 `go`/`make`、Go 系工具（gofumpt/goimports/golangci-lint/govulncheck）、系统工具（trivy/cloc），缺啥**只报告 + 给出可复制的安装命令**——不碰你的系统、不需 sudo。缺的 Go 工具在你跑 `make` 时会自动 `go install` 兜底。
+2. **拷贝**：把 `quality.mk` + `scripts/`（含共享 UI 库 `ui.sh`）拷进 `your-project/make-toolkit/`。
+3. **接线**：在项目 `Makefile` 接入 `include make-toolkit/quality.mk`（无 Makefile 则新建，已有则在末尾追加标记块、不动你原有目标）。
+4. **忽略生成物**：把 `coverage_results/`、`.build-cache/` 加进 `.gitignore`。
+
+可重复运行以更新脚本（幂等）。彩色输出在非 TTY、`NO_COLOR`、`TERM=dumb` 或 `--no-color` 下自动降级为纯文本。
+
+> `install.sh` 由 `build-installer.sh` 从本仓库源文件（`scripts/ui.sh` + `scripts/common.sh` + `installer/body.sh` + `quality.mk` + `scripts/*.sh`）生成；改了源文件后重跑 `bash build-installer.sh` 重新打包即可。
 
 ### 方式二：Git submodule（团队共享单一来源时）
 
