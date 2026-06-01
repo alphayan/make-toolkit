@@ -28,14 +28,26 @@
 
 ### 方式一：vendor 安装器（推荐，零外部依赖）
 
-把工具链**拷贝**进项目、随项目自身仓库提交，不依赖任何远程仓库——个人 / 公司项目都安全自包含：
+安装器会把工具链**拷贝**进项目、随项目自身仓库提交；安装完成后不依赖任何远程仓库，个人 / 公司项目都安全自包含：
 
 ```bash
-# install.sh 是自包含单文件，可拷到任何机器 / 项目直接运行
-bash install.sh /path/to/your-project     # 省略目标则为当前目录
-bash install.sh --into tools/mtk DIR       # 自定义 vendor 子目录（默认 make-toolkit）
-bash install.sh --no-color DIR             # 关闭彩色输出（CI / 重定向自动也会降级）
-bash install.sh --skip-doctor DIR          # 跳过装前环境自检
+# 从 GitHub 直接安装到当前目录
+curl -fsSL https://raw.githubusercontent.com/alphayan/make-toolkit/main/install.sh | bash
+
+# 从 GitHub 直接安装到指定项目
+curl -fsSL https://raw.githubusercontent.com/alphayan/make-toolkit/main/install.sh | bash -s -- /path/to/your-project
+
+# 自定义 vendor 子目录（默认 make-toolkit）
+curl -fsSL https://raw.githubusercontent.com/alphayan/make-toolkit/main/install.sh | bash -s -- --into tools/mtk /path/to/your-project
+```
+
+如果想先审阅安装器，也可以下载后再执行：
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/alphayan/make-toolkit/main/install.sh
+bash install.sh /path/to/your-project
+bash install.sh --no-color /path/to/your-project       # 关闭彩色输出（CI / 重定向自动也会降级）
+bash install.sh --skip-doctor /path/to/your-project    # 跳过装前环境自检
 ```
 
 运行时它会：
@@ -52,7 +64,7 @@ bash install.sh --skip-doctor DIR          # 跳过装前环境自检
 ### 方式二：Git submodule（团队共享单一来源时）
 
 ```bash
-git submodule add <仓库地址> tools/make-toolkit
+git submodule add https://github.com/alphayan/make-toolkit.git tools/make-toolkit
 ```
 ```makefile
 GO_MODULES := svc-a svc-b      # 留空则自动发现 go.mod
