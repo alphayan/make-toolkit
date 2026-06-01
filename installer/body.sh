@@ -22,6 +22,7 @@ mtk_pkg_hint() {
 
 # 装前自检:只报告,不安装。
 mtk_doctor() {
+    MTK_MISSING=()
     ui_section "环境自检"
     local t entry bin mod ver desc brewhint opt hint
     # 必需
@@ -43,7 +44,10 @@ mtk_doctor() {
         IFS='|' read -r bin brewhint opt desc <<<"$entry"
         if command -v "$bin" >/dev/null 2>&1; then ui_success "$bin 已安装($desc)"
         else
-            hint="$(mtk_pkg_hint "$bin")"
+            case "$(uname -s 2>/dev/null)" in
+                Darwin) hint="$brewhint" ;;
+                *)      hint="$(mtk_pkg_hint "$bin")" ;;
+            esac
             if [[ "$opt" == "yes" ]]; then ui_info "$bin 未安装(可选,$desc)— $hint"
             else ui_warn "$bin 缺失($desc)— $hint(或 Docker 回退)"; fi
             MTK_MISSING+=("$bin")
