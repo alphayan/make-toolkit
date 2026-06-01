@@ -396,7 +396,8 @@ mtk_link_makefile() {
 
 # 幂等补 .gitignore。
 mtk_update_gitignore() {
-    local target="$1" gi="$target/.gitignore" pat
+    local target="$1"
+    local gi="$target/.gitignore" pat
     for pat in "coverage_results/" ".build-cache/"; do
         if [[ ! -f "$gi" ]] || ! grep -qxF "$pat" "$gi" 2>/dev/null; then
             echo "$pat" >> "$gi"
