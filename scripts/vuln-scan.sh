@@ -32,6 +32,7 @@ run_govulncheck() {
     gv_bin="$(go env GOPATH 2>/dev/null)/bin/govulncheck"
     if [[ ! -x "${gv_bin}" ]] && ! command -v govulncheck >/dev/null 2>&1; then
         log_info "尝试安装 govulncheck..."
+        # 注:module 路径须与 common.sh 的 MTK_GO_TOOLS 中 govulncheck 条目保持一致
         go install golang.org/x/vuln/cmd/govulncheck@latest || true
     fi
 

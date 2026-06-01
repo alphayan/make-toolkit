@@ -112,18 +112,6 @@ ensure_golangci_lint() {
     ensure_go_tool "golangci-lint" "github.com/golangci/golangci-lint/cmd/golangci-lint" "$version" || log_warning "golangci-lint 安装失败"
 }
 
-# 检查并安装 staticcheck
-ensure_staticcheck() {
-    local version="${STATICCHECK_VERSION:-2023.1.6}"
-    ensure_go_tool "staticcheck" "honnef.co/go/tools/cmd/staticcheck" "$version" || log_warning "staticcheck 安装失败"
-}
-
-# 检查并安装 ineffassign
-ensure_ineffassign() {
-    local version="${INEFFASSIGN_VERSION:-latest}"
-    ensure_go_tool "ineffassign" "github.com/gordonklaus/ineffassign" "$version" || log_warning "ineffassign 安装失败"
-}
-
 # 检查并安装 goimports
 ensure_goimports() {
     ensure_go_tool "goimports" "golang.org/x/tools/cmd/goimports" "latest" || log_warning "goimports 安装失败"
@@ -198,7 +186,7 @@ resolve_go_modules() {
 
 export -f log_info log_success log_warning log_error log_step
 export -f add_path_if_missing contains_item ensure_go_tool
-export -f ensure_golangci_lint ensure_staticcheck ensure_ineffassign ensure_goimports ensure_gofumpt
+export -f ensure_golangci_lint ensure_goimports ensure_gofumpt
 export -f get_project_root get_cpu_count discover_go_modules resolve_go_modules
 
 # 颜色别名:兼容直接使用 $RED/$GREEN/… 的旧脚本(run-tests.sh 等)
