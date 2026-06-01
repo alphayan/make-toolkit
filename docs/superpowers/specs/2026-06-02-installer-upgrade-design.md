@@ -100,7 +100,7 @@
      "cloc|brew install cloc|yes|代码行数统计"
    )
    ```
-   `ensure_go_tool`/`ensure_gofumpt`/… 重构为从 `MTK_GO_TOOLS` 查表(对外签名不变)。
+   `MTK_GO_TOOLS` 作为 doctor 的单一来源;现有 `ensure_gofumpt`/`ensure_goimports`/`ensure_golangci_lint` 的硬编码 module 须与清单值一致(本次不重构其内部,避免运行时回归)。
 3. `modernize` 经 `go run …/modernize@latest` 按需拉取,无需预装,自检不单列(只要有 `go` 即可)。
 4. `staticcheck`/`ineffassign` 由 `golangci-lint` 内置覆盖,自检只看 `golangci-lint`。
 
@@ -121,7 +121,7 @@
 7. 补 `.gitignore`:`coverage_results/`、`.build-cache/`(缺失才加)。
 8. `ui_result`:成功 + 自检摘要(还缺哪些工具)+ 下一步提示。
 
-错误处理:`set -euo pipefail`;`trap` 在非 0 退出时 `ui_error` 打印失败步骤;不产生需清理的临时文件(文件均内联)。
+错误处理:`set -euo pipefail`;`trap … ERR` 在非 0 退出时 `ui_error` 打印错误与退出码;`run_with_spinner` 的临时输出文件即时清理,vendor 文件均内联。
 
 ## 8. `build-installer.sh` 改动
 
