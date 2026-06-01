@@ -1,29 +1,35 @@
 #!/usr/bin/env bash
-# make-toolkit 自包含安装器（由 build-installer.sh 自动生成，请勿手改）
+# make-toolkit 自包含安装器(由 build-installer.sh 自动生成,请勿手改)
 #
-# 把 Go 代码质量工具链拷贝进目标项目并接好 Makefile：
+# 把 Go 代码质量工具链拷贝进目标项目并接好 Makefile:
 #   make scan / format / quality-check / lint / test / test-coverage / race-check / cloc
-# 不用 git submodule、不依赖任何远程仓库 —— 拷进去的文件随项目自身仓库提交即可，
-# 个人 / 公司项目都安全自包含。
+# 不用 git submodule、不依赖任何远程仓库,拷进去的文件随项目自身仓库提交即可。
 #
 # 用法:
 #   bash install.sh [目标项目目录]        # 默认当前目录
-#   bash install.sh --into deps/mtk DIR   # 自定义 vendor 子目录（默认 make-toolkit）
+#   bash install.sh --into deps/mtk DIR   # 自定义 vendor 子目录(默认 make-toolkit)
+#   bash install.sh --no-color DIR        # 关闭彩色输出
+#   bash install.sh --skip-doctor DIR     # 跳过装前环境自检
 #   bash install.sh --help
 set -euo pipefail
 
 VENDOR_SUBDIR="make-toolkit"
 TARGET=""
+SKIP_DOCTOR=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --into) VENDOR_SUBDIR="${2:?--into 需要一个目录名}"; shift 2 ;;
+    --no-color) export MTK_NO_COLOR=1; shift ;;
+    --skip-doctor) SKIP_DOCTOR=1; shift ;;
     -h|--help)
       cat <<'USAGE'
 make-toolkit 安装器
   bash install.sh [目标项目目录]        默认当前目录
   bash install.sh --into deps/mtk DIR   自定义 vendor 子目录
-拷贝 quality.mk + scripts/ 进目标项目的 <子目录>/，并在其 Makefile 接入
-`include <子目录>/quality.mk`。可重复运行以更新脚本。
+  bash install.sh --no-color DIR        关闭彩色输出
+  bash install.sh --skip-doctor DIR     跳过装前自检
+拷贝 quality.mk + scripts/ 进目标项目的 <子目录>/,并在其 Makefile 接入
+`include <子目录>/quality.mk`。可重复运行以更新脚本(幂等)。
 USAGE
       exit 0 ;;
     --*) echo "未知参数: $1" >&2; exit 1 ;;
@@ -36,151 +42,119 @@ if [[ ! -d "$TARGET" ]]; then echo "目标目录不存在: $TARGET" >&2; exit 1;
 TARGET="$(cd "$TARGET" && pwd)"
 DEST="$TARGET/$VENDOR_SUBDIR"
 
-echo "→ 安装 make-toolkit 到: $DEST"
-mkdir -p "$DEST/scripts"
-# ===== BEGIN embedded files =====
-mkdir -p "$(dirname "$DEST/quality.mk")"
-cat > "$DEST/quality.mk" <<'MTK_EOF_quality_mk_'
-# make-toolkit — 可复用的 Go 代码质量工具链
-#
-# 用法：在你项目根目录的 Makefile 里 include（建议先把本仓库加为 git submodule）：
-#
-#     include tools/make-toolkit/quality.mk
-#
-# 然后即可使用 make format / quality-check / scan / lint / test / race-check / cloc。
-# 可在 include 之前覆盖下面的变量；留空则自动发现 go.mod。
-#
-# ⚠️ 注意：本文件会定义 format/quality-check/scan/lint/test/test-coverage/
-#    test-verbose/race-check/cloc 这些目标，请勿在你的 Makefile 里重名。
+# ===== embedded: scripts/ui.sh =====
+# make-toolkit UI 组件库 — 纯 bash,零依赖,兼容 bash 3.2(不使用关联数组)。
+# 三级颜色降级:truecolor / ansi8 / none。被 common.sh source,也被 install.sh 内联。
 
-# 本 .mk 所在目录（无论被谁 include 都能正确定位 scripts/）
-MK_TOOLKIT_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
-MK_SCRIPTS := $(MK_TOOLKIT_DIR)/scripts
+[[ -n "${MTK_UI_LOADED:-}" ]] && return 0 2>/dev/null
+MTK_UI_LOADED=1
 
-# 项目根：默认 = 调用 make 的目录
-PROJECT_ROOT ?= $(CURDIR)
+MTK_COLOR_MODE=""
+C_RESET=""; C_BOLD=""; C_DIM=""
+C_ACCENT=""; C_INFO=""; C_OK=""; C_WARN=""; C_ERR=""; C_MUTED=""
+ICON_INFO="[INFO]"; ICON_OK="[OK]"; ICON_WARN="[WARN]"; ICON_ERR="[ERROR]"; ICON_STAGE="-"
 
-# ---- 可配置变量（留空则自动发现 go.mod）----
-GO_MODULES       ?=
-FORMAT_MODULES   ?=
-TEST_MODULES     ?=
-MODULE_ALIASES   ?=
-COVERAGE_EXCLUDE ?=
-VULN_SEVERITY    ?= CRITICAL,HIGH
-TRIVY_SCANNERS   ?= vuln
-TRIVY_SKIP_DIRS  ?=
-RACE_TIMEOUT     ?= 5m
-RACE_EXCLUDE     ?= e2e|docs
-GOLANGCI_TIMEOUT ?= 5m
-
-# 导出给脚本（未赋值的导出为空字符串，脚本内有默认值，无副作用）
-export PROJECT_ROOT GO_MODULES FORMAT_MODULES TEST_MODULES MODULE_ALIASES COVERAGE_EXCLUDE
-export VULN_SEVERITY TRIVY_SCANNERS TRIVY_SKIP_DIRS TRIVY_IMAGE
-export RACE_TIMEOUT RACE_EXCLUDE RACE_MODULES
-export GOLANGCI_TIMEOUT GOLANGCI_LINT_VERSION
-export SKIP_VULN SKIP_CHECKS DISABLE_GOLANGCI_LINT SKIP_MODERNIZE WITH_TESTS
-
-.PHONY: tk-help format quality-check scan lint test test-verbose test-coverage race-check cloc
-
-tk-help:
-	@echo "make-toolkit 目标："
-	@echo "  make format         - gofumpt + goimports + modernize 格式化"
-	@echo "  make quality-check  - go vet + golangci-lint"
-	@echo "  make scan           - 依赖漏洞扫描（govulncheck + Trivy，前后端）"
-	@echo "  make lint           - quality-check + scan"
-	@echo "  make test           - 单元测试（指定模块: make test TEST_MODULES=\"a b\"）"
-	@echo "  make test-verbose   - 单元测试（详细输出）"
-	@echo "  make test-coverage  - 单元测试 + 覆盖率报告"
-	@echo "  make race-check     - go test -race"
-	@echo "  make cloc           - 代码行数统计（WITH_TESTS=1 含测试）"
-	@echo ""
-	@echo "配置变量（include 前覆盖；留空自动发现 go.mod）："
-	@echo "  GO_MODULES FORMAT_MODULES TEST_MODULES MODULE_ALIASES COVERAGE_EXCLUDE"
-	@echo "  VULN_SEVERITY TRIVY_SCANNERS TRIVY_SKIP_DIRS"
-	@echo "  开关：SKIP_VULN=1 SKIP_CHECKS=1 DISABLE_GOLANGCI_LINT=1 SKIP_MODERNIZE=1"
-
-format:
-	@bash $(MK_SCRIPTS)/format-code.sh
-
-quality-check:
-	@bash $(MK_SCRIPTS)/quality-check.sh
-
-scan:
-	@bash $(MK_SCRIPTS)/vuln-scan.sh
-
-lint: quality-check scan
-
-test:
-	@bash $(MK_SCRIPTS)/run-tests.sh
-
-test-verbose:
-	@bash $(MK_SCRIPTS)/run-tests.sh --verbose
-
-test-coverage:
-	@bash $(MK_SCRIPTS)/run-tests.sh --coverage
-
-race-check:
-	@bash $(MK_SCRIPTS)/race-check.sh
-
-cloc:
-	@bash $(MK_SCRIPTS)/cloc.sh
-MTK_EOF_quality_mk_
-mkdir -p "$(dirname "$DEST/scripts/cloc.sh")"
-cat > "$DEST/scripts/cloc.sh" <<'MTK_EOF_scripts_cloc_sh_'
-#!/bin/bash
-
-# 代码行数统计（通用化）
-# 默认排除测试文件；WITH_TESTS=1 则包含测试文件。
-# 排除 .git / node_modules / vendor / dist。
-
-set -e
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/common.sh"
-
-PROJECT_ROOT="${PROJECT_ROOT:-$(get_project_root)}"
-cd "$PROJECT_ROOT"
-
-INCLUDE_TESTS="${WITH_TESTS:-0}"
-
-if [[ "$INCLUDE_TESTS" == "1" ]]; then
-    log_step "统计代码行数（包含测试文件）..."
-else
-    log_step "统计代码行数（排除测试文件）..."
-fi
-
-if command -v cloc >/dev/null 2>&1; then
-    if [[ "$INCLUDE_TESTS" == "1" ]]; then
-        find . -type f \( -name "*.go" -o -name "*.ts" -o -name "*.tsx" -o -name "*.js" -o -name "*.vue" \) \
-            ! -path "*/.git/*" ! -path "*/node_modules/*" ! -path "*/vendor/*" ! -path "*/dist/*" \
-            | cloc --list-file=- .
+# 判定颜色模式并填充颜色/图标变量。
+ui_init_colors() {
+    if [[ "${MTK_NO_COLOR:-0}" == "1" || -n "${NO_COLOR:-}" || "${TERM:-dumb}" == "dumb" || ! -t 1 ]]; then
+        MTK_COLOR_MODE="none"
+    elif [[ "${COLORTERM:-}" == "truecolor" || "${COLORTERM:-}" == "24bit" ]]; then
+        MTK_COLOR_MODE="truecolor"
     else
-        find . -type f \( -name "*.go" -o -name "*.ts" -o -name "*.tsx" -o -name "*.js" -o -name "*.vue" \) \
-            ! -path "*/.git/*" ! -path "*/node_modules/*" ! -path "*/vendor/*" ! -path "*/dist/*" ! -name "*_test.go" \
-            | cloc --list-file=- .
+        MTK_COLOR_MODE="ansi8"
     fi
-else
-    log_warning "cloc 不可用（brew install cloc），使用文件数量替代统计"
-    echo ""
-    count() { find . -type f ! -path "*/.git/*" ! -path "*/node_modules/*" ! -path "*/vendor/*" ! -path "*/dist/*" "$@" 2>/dev/null | wc -l | tr -d ' '; }
-    if [[ "$INCLUDE_TESTS" == "1" ]]; then
-        GO_FILES=$(count -name "*.go")
+
+    if [[ "$MTK_COLOR_MODE" == "none" ]]; then
+        C_RESET=""; C_BOLD=""; C_DIM=""
+        C_ACCENT=""; C_INFO=""; C_OK=""; C_WARN=""; C_ERR=""; C_MUTED=""
+        ICON_INFO="[INFO]"; ICON_OK="[OK]"; ICON_WARN="[WARN]"; ICON_ERR="[ERROR]"; ICON_STAGE="-"
+        return 0
+    fi
+
+    C_RESET=$'\033[0m'; C_BOLD=$'\033[1m'; C_DIM=$'\033[2m'
+    ICON_INFO="i"; ICON_OK="OK"; ICON_WARN="!"; ICON_ERR="x"; ICON_STAGE=">"
+    if [[ "$MTK_COLOR_MODE" == "truecolor" ]]; then
+        C_ACCENT=$'\033[38;2;0;191;165m'
+        C_INFO=$'\033[38;2;136;146;176m'
+        C_OK=$'\033[38;2;0;200;120m'
+        C_WARN=$'\033[38;2;255;176;32m'
+        C_ERR=$'\033[38;2;230;57;70m'
+        C_MUTED=$'\033[38;2;120;130;150m'
     else
-        GO_FILES=$(find . -name "*.go" ! -path "*/.git/*" ! -path "*/vendor/*" ! -name "*_test.go" 2>/dev/null | wc -l | tr -d ' ')
+        C_ACCENT=$'\033[36m'; C_INFO=$'\033[34m'; C_OK=$'\033[32m'
+        C_WARN=$'\033[33m'; C_ERR=$'\033[31m'; C_MUTED=$'\033[2m'
     fi
-    TS_FILES=$(count \( -name "*.ts" -o -name "*.tsx" \))
-    JS_FILES=$(count -name "*.js")
-    VUE_FILES=$(count -name "*.vue")
-    echo "Go 文件:         $GO_FILES"
-    echo "TypeScript 文件: $TS_FILES"
-    echo "JavaScript 文件: $JS_FILES"
-    echo "Vue 文件:        $VUE_FILES"
-    echo "总文件数:        $(( GO_FILES + TS_FILES + JS_FILES + VUE_FILES ))"
-fi
-MTK_EOF_scripts_cloc_sh_
-mkdir -p "$(dirname "$DEST/scripts/common.sh")"
-cat > "$DEST/scripts/common.sh" <<'MTK_EOF_scripts_common_sh_'
-#!/bin/bash
+}
+
+ui_info()    { printf '%s%s%s %s\n' "$C_INFO"   "$ICON_INFO"  "$C_RESET" "$*"; }
+ui_success() { printf '%s%s%s %s\n' "$C_OK"     "$ICON_OK"    "$C_RESET" "$*"; }
+ui_warn()    { printf '%s%s%s %s\n' "$C_WARN"   "$ICON_WARN"  "$C_RESET" "$*" >&2; }
+ui_error()   { printf '%s%s%s %s\n' "$C_ERR"    "$ICON_ERR"   "$C_RESET" "$*" >&2; }
+ui_stage()   { printf '%s%s%s %s\n' "$C_ACCENT" "$ICON_STAGE" "$C_RESET" "$*"; }
+
+ui_section() {
+    printf '\n%s%s%s%s\n' "$C_BOLD" "$C_ACCENT" "$*" "$C_RESET"
+    printf '%s%s%s\n' "$C_MUTED" "----------------------------------------" "$C_RESET"
+}
+
+# ui_kv KEY VALUE — 键左对齐到 14 列。
+ui_kv() { printf '  %s%-14s%s %s\n' "$C_MUTED" "$1" "$C_RESET" "$2"; }
+
+# ui_panel — 从 stdin 读多行,加左边框(none 模式两空格缩进)。
+ui_panel() {
+    local line
+    while IFS= read -r line; do
+        if [[ "$MTK_COLOR_MODE" == "none" ]]; then
+            printf '  %s\n' "$line"
+        else
+            printf '%s|%s %s\n' "$C_MUTED" "$C_RESET" "$line"
+        fi
+    done
+}
+
+ui_banner() {
+    if [[ "$MTK_COLOR_MODE" == "none" ]]; then
+        printf 'make-toolkit -- Go 代码质量工具链\n'
+        return 0
+    fi
+    printf '\n%s%s make-toolkit %s%s\n' "$C_BOLD$C_ACCENT" "###" "###" "$C_RESET"
+    printf '%sGo 代码质量工具链%s\n' "$C_MUTED" "$C_RESET"
+}
+
+# run_with_spinner DESC -- CMD...
+# tty 下转圈;none/非 tty 打印 "DESC... done|failed"。捕获退出码,失败回显输出。
+run_with_spinner() {
+    local desc="$1"; shift
+    [[ "${1:-}" == "--" ]] && shift
+    local tmp rc; tmp="$(mktemp)"
+    if [[ "$MTK_COLOR_MODE" == "none" || ! -t 1 ]]; then
+        printf '%s... ' "$desc"
+        if "$@" >"$tmp" 2>&1; then printf 'done\n'; rc=0
+        else rc=$?; printf 'failed\n'; cat "$tmp"; fi
+        rm -f "$tmp"; return $rc
+    fi
+    local frames='|/-\' i=0 pid
+    "$@" >"$tmp" 2>&1 &
+    pid=$!
+    while kill -0 "$pid" 2>/dev/null; do
+        printf '\r%s%s%s %s' "$C_ACCENT" "${frames:$i:1}" "$C_RESET" "$desc"
+        i=$(( (i + 1) % 4 ))
+        sleep 0.1
+    done
+    wait "$pid"; rc=$?
+    if [[ $rc -eq 0 ]]; then
+        printf '\r%s%s%s %s\n' "$C_OK" "$ICON_OK" "$C_RESET" "$desc"
+    else
+        printf '\r%s%s%s %s\n' "$C_ERR" "$ICON_ERR" "$C_RESET" "$desc"; cat "$tmp"
+    fi
+    rm -f "$tmp"; return $rc
+}
+
+export MTK_COLOR_MODE C_RESET C_BOLD C_DIM C_ACCENT C_INFO C_OK C_WARN C_ERR C_MUTED
+export ICON_INFO ICON_OK ICON_WARN ICON_ERR ICON_STAGE
+export -f ui_init_colors ui_info ui_success ui_warn ui_error ui_stage ui_section ui_kv ui_panel ui_banner run_with_spinner 2>/dev/null || true
+
+# ===== embedded: scripts/common.sh =====
 
 # make-toolkit 公共函数库
 # 提供日志、工具安装、Go 模块发现等公共功能。
@@ -188,34 +162,36 @@ cat > "$DEST/scripts/common.sh" <<'MTK_EOF_scripts_common_sh_'
 
 set -e
 
-# 颜色定义
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-NC='\033[0m'
+# 加载 UI 原语(同目录)。内嵌进 install.sh 时此文件不存在,守卫跳过,
+# 复用已就地定义的 ui_*;作为 vendor 文件时正常 source。
+_MK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/null || echo .)"
+if [[ -f "$_MK_DIR/ui.sh" ]]; then
+    # shellcheck source=/dev/null
+    source "$_MK_DIR/ui.sh"
+    ui_init_colors
+fi
 
-# 日志函数
-log_info() {
-    echo -e "${BLUE}[INFO]${NC} $1"
-}
+# 兼容旧调用点:log_* 转调 ui_*(无色降级时输出与历史一致)。
+log_info()    { ui_info "$@"; }
+log_success() { ui_success "$@"; }
+log_warning() { ui_warn "$@"; }
+log_error()   { ui_error "$@"; }
+log_step()    { ui_stage "$@"; }
 
-log_success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1"
-}
-
-log_warning() {
-    echo -e "${YELLOW}[WARNING]${NC} $1"
-}
-
-log_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
-}
-
-log_step() {
-    echo -e "${CYAN}[STEP]${NC} $1"
-}
+# ---- 工具清单:单一事实来源(供 ensure_* 与安装器 doctor 共用)----
+# bash 3.2 无关联数组,用 "字段|字段" 字符串数组。
+# MTK_GO_TOOLS 每项:binary|module|version|desc
+MTK_GO_TOOLS=(
+    "gofumpt|mvdan.cc/gofumpt|latest|格式化"
+    "goimports|golang.org/x/tools/cmd/goimports|latest|整理导入"
+    "golangci-lint|github.com/golangci/golangci-lint/cmd/golangci-lint|${GOLANGCI_LINT_VERSION:-v1.60.3}|质量检查(含 staticcheck/ineffassign)"
+    "govulncheck|golang.org/x/vuln/cmd/govulncheck|latest|漏洞扫描"
+)
+# MTK_SYS_TOOLS 每项:binary|brew_install_hint|optional(yes/no)|desc
+MTK_SYS_TOOLS=(
+    "trivy|brew install trivy|no|整仓/前端漏洞(可 docker 回退)"
+    "cloc|brew install cloc|yes|代码行数统计"
+)
 
 # 向 PATH 追加目录（若未包含）
 add_path_if_missing() {
@@ -380,9 +356,488 @@ export -f log_info log_success log_warning log_error log_step
 export -f add_path_if_missing contains_item ensure_go_tool
 export -f ensure_golangci_lint ensure_staticcheck ensure_ineffassign ensure_goimports ensure_gofumpt
 export -f get_project_root get_cpu_count discover_go_modules resolve_go_modules
+
+# 颜色别名:兼容直接使用 $RED/$GREEN/… 的旧脚本(run-tests.sh 等)
+RED=$C_ERR; GREEN=$C_OK; YELLOW=$C_WARN; BLUE=$C_INFO; CYAN=$C_ACCENT; NC=$C_RESET
+export RED GREEN YELLOW BLUE CYAN NC
+
+# ===== embedded: installer/body.sh =====
+# make-toolkit 安装器主体逻辑。仅供 build-installer.sh 内联进 install.sh。
+# 依赖:ui.sh(UI 原语)、common.sh(MTK_GO_TOOLS / MTK_SYS_TOOLS)。
+# 不进 scripts/、不 vendor 给用户。
+
+# 记录缺失工具,供结果摘要复用。
+MTK_MISSING=()
+
+# 针对当前系统回显一条安装命令(brew / apt / dnf / pacman)。
+mtk_pkg_hint() {
+    local pkg="$1"
+    case "$(uname -s 2>/dev/null)" in
+        Darwin) printf 'brew install %s' "$pkg" ;;
+        Linux)
+            if   command -v apt-get >/dev/null 2>&1; then printf 'sudo apt-get install -y %s' "$pkg"
+            elif command -v dnf     >/dev/null 2>&1; then printf 'sudo dnf install -y %s' "$pkg"
+            elif command -v pacman  >/dev/null 2>&1; then printf 'sudo pacman -S --noconfirm %s' "$pkg"
+            else printf '用你的包管理器安装 %s' "$pkg"; fi ;;
+        *) printf '安装 %s' "$pkg" ;;
+    esac
+}
+
+# 装前自检:只报告,不安装。
+mtk_doctor() {
+    MTK_MISSING=()
+    ui_section "环境自检"
+    local t entry bin mod ver desc brewhint opt hint
+    # 必需
+    for t in go make; do
+        if command -v "$t" >/dev/null 2>&1; then ui_success "$t 已安装"
+        else ui_error "$t 缺失(必需,装了工具链才有用)"; MTK_MISSING+=("$t"); fi
+    done
+    # Go 系:缺了 make 时会自动 go install 兜底
+    for entry in "${MTK_GO_TOOLS[@]}"; do
+        IFS='|' read -r bin mod ver desc <<<"$entry"
+        if command -v "$bin" >/dev/null 2>&1; then ui_success "$bin 已安装($desc)"
+        else
+            ui_warn "$bin 缺失($desc)— make 时会自动安装,或手动: go install ${mod}@${ver}"
+            MTK_MISSING+=("$bin")
+        fi
+    done
+    # 系统系:给平台相关命令
+    for entry in "${MTK_SYS_TOOLS[@]}"; do
+        IFS='|' read -r bin brewhint opt desc <<<"$entry"
+        if command -v "$bin" >/dev/null 2>&1; then ui_success "$bin 已安装($desc)"
+        else
+            case "$(uname -s 2>/dev/null)" in
+                Darwin) hint="$brewhint" ;;
+                *)      hint="$(mtk_pkg_hint "$bin")" ;;
+            esac
+            if [[ "$opt" == "yes" ]]; then ui_info "$bin 未安装(可选,$desc)— $hint"
+            else ui_warn "$bin 缺失($desc)— $hint(或 Docker 回退)"; fi
+            MTK_MISSING+=("$bin")
+        fi
+    done
+}
+
+# 安装计划面板(纯展示,随后直接执行)。
+mtk_show_plan() {
+    # $1 target  $2 dest  $3 vendor_subdir
+    ui_section "安装计划"
+    {
+        ui_kv "目标项目" "$1"
+        ui_kv "工具链目录" "$2"
+        ui_kv "将拷贝" "quality.mk, scripts/*.sh (含 ui.sh)"
+        ui_kv "Makefile" "接入 include ${3}/quality.mk(幂等)"
+        ui_kv ".gitignore" "追加 coverage_results/ 和 .build-cache/"
+    } | ui_panel
+}
+
+# 幂等接入 Makefile。
+mtk_link_makefile() {
+    local target="$1" vendor_subdir="$2"
+    local mk="$target/Makefile"
+    local include_line="include ${vendor_subdir}/quality.mk"
+    if [[ ! -f "$mk" ]]; then
+        {
+            echo "# >>> make-toolkit >>>"
+            echo "# 留空则自动发现 go.mod;多模块可显式声明,例如:"
+            echo "# GO_MODULES := svc-a svc-b"
+            echo "$include_line"
+            echo "# <<< make-toolkit <<<"
+        } > "$mk"
+        ui_success "已创建 Makefile 并接入工具链"
+    elif grep -qF "$include_line" "$mk"; then
+        ui_info "Makefile 已包含 include(脚本已刷新),跳过接线"
+    else
+        {
+            echo ""
+            echo "# >>> make-toolkit >>>"
+            echo "$include_line"
+            echo "# <<< make-toolkit <<<"
+        } >> "$mk"
+        ui_success "已向现有 Makefile 追加 include"
+    fi
+}
+
+# 幂等补 .gitignore。
+mtk_update_gitignore() {
+    local target="$1"
+    local gi="$target/.gitignore" pat
+    for pat in "coverage_results/" ".build-cache/"; do
+        if [[ ! -f "$gi" ]] || ! grep -qxF "$pat" "$gi" 2>/dev/null; then
+            echo "$pat" >> "$gi"
+        fi
+    done
+    ui_success ".gitignore 已更新"
+}
+
+# 结果面板 + 下一步。
+mtk_show_result() {
+    local target="$1"
+    ui_section "完成"
+    {
+        ui_kv "已安装到" "$target"
+        if [[ ${#MTK_MISSING[@]} -gt 0 ]]; then
+            ui_kv "仍缺工具" "${MTK_MISSING[*]}"
+        fi
+        ui_kv "下一步" "cd \"$target\" && make tk-help"
+    } | ui_panel
+    ui_success "安装完成"
+}
+
+
+# ===== vendored files (written into target project) =====
+vendor_files() {
+  mkdir -p "$DEST/scripts"
+  mkdir -p "$(dirname "$DEST/quality.mk")"
+  cat > "$DEST/quality.mk" <<'MTK_EOF_quality_mk_'
+# make-toolkit — 可复用的 Go 代码质量工具链
+#
+# 用法：在你项目根目录的 Makefile 里 include（建议先把本仓库加为 git submodule）：
+#
+#     include tools/make-toolkit/quality.mk
+#
+# 然后即可使用 make format / quality-check / scan / lint / test / race-check / cloc。
+# 可在 include 之前覆盖下面的变量；留空则自动发现 go.mod。
+#
+# ⚠️ 注意：本文件会定义 format/quality-check/scan/lint/test/test-coverage/
+#    test-verbose/race-check/cloc 这些目标，请勿在你的 Makefile 里重名。
+
+# 本 .mk 所在目录（无论被谁 include 都能正确定位 scripts/）
+MK_TOOLKIT_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
+MK_SCRIPTS := $(MK_TOOLKIT_DIR)/scripts
+
+# 项目根：默认 = 调用 make 的目录
+PROJECT_ROOT ?= $(CURDIR)
+
+# ---- 可配置变量（留空则自动发现 go.mod）----
+GO_MODULES       ?=
+FORMAT_MODULES   ?=
+TEST_MODULES     ?=
+MODULE_ALIASES   ?=
+COVERAGE_EXCLUDE ?=
+VULN_SEVERITY    ?= CRITICAL,HIGH
+TRIVY_SCANNERS   ?= vuln
+TRIVY_SKIP_DIRS  ?=
+RACE_TIMEOUT     ?= 5m
+RACE_EXCLUDE     ?= e2e|docs
+GOLANGCI_TIMEOUT ?= 5m
+
+# 导出给脚本（未赋值的导出为空字符串，脚本内有默认值，无副作用）
+export PROJECT_ROOT GO_MODULES FORMAT_MODULES TEST_MODULES MODULE_ALIASES COVERAGE_EXCLUDE
+export VULN_SEVERITY TRIVY_SCANNERS TRIVY_SKIP_DIRS TRIVY_IMAGE
+export RACE_TIMEOUT RACE_EXCLUDE RACE_MODULES
+export GOLANGCI_TIMEOUT GOLANGCI_LINT_VERSION
+export SKIP_VULN SKIP_CHECKS DISABLE_GOLANGCI_LINT SKIP_MODERNIZE WITH_TESTS
+
+.PHONY: tk-help format quality-check scan lint test test-verbose test-coverage race-check cloc
+
+tk-help:
+	@echo "make-toolkit 目标："
+	@echo "  make format         - gofumpt + goimports + modernize 格式化"
+	@echo "  make quality-check  - go vet + golangci-lint"
+	@echo "  make scan           - 依赖漏洞扫描（govulncheck + Trivy，前后端）"
+	@echo "  make lint           - quality-check + scan"
+	@echo "  make test           - 单元测试（指定模块: make test TEST_MODULES=\"a b\"）"
+	@echo "  make test-verbose   - 单元测试（详细输出）"
+	@echo "  make test-coverage  - 单元测试 + 覆盖率报告"
+	@echo "  make race-check     - go test -race"
+	@echo "  make cloc           - 代码行数统计（WITH_TESTS=1 含测试）"
+	@echo ""
+	@echo "配置变量（include 前覆盖；留空自动发现 go.mod）："
+	@echo "  GO_MODULES FORMAT_MODULES TEST_MODULES MODULE_ALIASES COVERAGE_EXCLUDE"
+	@echo "  VULN_SEVERITY TRIVY_SCANNERS TRIVY_SKIP_DIRS"
+	@echo "  开关：SKIP_VULN=1 SKIP_CHECKS=1 DISABLE_GOLANGCI_LINT=1 SKIP_MODERNIZE=1"
+
+format:
+	@bash $(MK_SCRIPTS)/format-code.sh
+
+quality-check:
+	@bash $(MK_SCRIPTS)/quality-check.sh
+
+scan:
+	@bash $(MK_SCRIPTS)/vuln-scan.sh
+
+lint: quality-check scan
+
+test:
+	@bash $(MK_SCRIPTS)/run-tests.sh
+
+test-verbose:
+	@bash $(MK_SCRIPTS)/run-tests.sh --verbose
+
+test-coverage:
+	@bash $(MK_SCRIPTS)/run-tests.sh --coverage
+
+race-check:
+	@bash $(MK_SCRIPTS)/race-check.sh
+
+cloc:
+	@bash $(MK_SCRIPTS)/cloc.sh
+MTK_EOF_quality_mk_
+  mkdir -p "$(dirname "$DEST/scripts/cloc.sh")"
+  cat > "$DEST/scripts/cloc.sh" <<'MTK_EOF_scripts_cloc_sh_'
+#!/bin/bash
+
+# 代码行数统计（通用化）
+# 默认排除测试文件；WITH_TESTS=1 则包含测试文件。
+# 排除 .git / node_modules / vendor / dist。
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/common.sh"
+
+PROJECT_ROOT="${PROJECT_ROOT:-$(get_project_root)}"
+cd "$PROJECT_ROOT"
+
+INCLUDE_TESTS="${WITH_TESTS:-0}"
+
+if [[ "$INCLUDE_TESTS" == "1" ]]; then
+    log_step "统计代码行数（包含测试文件）..."
+else
+    log_step "统计代码行数（排除测试文件）..."
+fi
+
+if command -v cloc >/dev/null 2>&1; then
+    if [[ "$INCLUDE_TESTS" == "1" ]]; then
+        find . -type f \( -name "*.go" -o -name "*.ts" -o -name "*.tsx" -o -name "*.js" -o -name "*.vue" \) \
+            ! -path "*/.git/*" ! -path "*/node_modules/*" ! -path "*/vendor/*" ! -path "*/dist/*" \
+            | cloc --list-file=- .
+    else
+        find . -type f \( -name "*.go" -o -name "*.ts" -o -name "*.tsx" -o -name "*.js" -o -name "*.vue" \) \
+            ! -path "*/.git/*" ! -path "*/node_modules/*" ! -path "*/vendor/*" ! -path "*/dist/*" ! -name "*_test.go" \
+            | cloc --list-file=- .
+    fi
+else
+    log_warning "cloc 不可用（brew install cloc），使用文件数量替代统计"
+    echo ""
+    count() { find . -type f ! -path "*/.git/*" ! -path "*/node_modules/*" ! -path "*/vendor/*" ! -path "*/dist/*" "$@" 2>/dev/null | wc -l | tr -d ' '; }
+    if [[ "$INCLUDE_TESTS" == "1" ]]; then
+        GO_FILES=$(count -name "*.go")
+    else
+        GO_FILES=$(find . -name "*.go" ! -path "*/.git/*" ! -path "*/vendor/*" ! -name "*_test.go" 2>/dev/null | wc -l | tr -d ' ')
+    fi
+    TS_FILES=$(count \( -name "*.ts" -o -name "*.tsx" \))
+    JS_FILES=$(count -name "*.js")
+    VUE_FILES=$(count -name "*.vue")
+    echo "Go 文件:         $GO_FILES"
+    echo "TypeScript 文件: $TS_FILES"
+    echo "JavaScript 文件: $JS_FILES"
+    echo "Vue 文件:        $VUE_FILES"
+    echo "总文件数:        $(( GO_FILES + TS_FILES + JS_FILES + VUE_FILES ))"
+fi
+MTK_EOF_scripts_cloc_sh_
+  mkdir -p "$(dirname "$DEST/scripts/common.sh")"
+  cat > "$DEST/scripts/common.sh" <<'MTK_EOF_scripts_common_sh_'
+#!/bin/bash
+
+# make-toolkit 公共函数库
+# 提供日志、工具安装、Go 模块发现等公共功能。
+# 来源：从一套多模块 Go 项目的 deploy/scripts 通用化而来。
+
+set -e
+
+# 加载 UI 原语(同目录)。内嵌进 install.sh 时此文件不存在,守卫跳过,
+# 复用已就地定义的 ui_*;作为 vendor 文件时正常 source。
+_MK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/null || echo .)"
+if [[ -f "$_MK_DIR/ui.sh" ]]; then
+    # shellcheck source=/dev/null
+    source "$_MK_DIR/ui.sh"
+    ui_init_colors
+fi
+
+# 兼容旧调用点:log_* 转调 ui_*(无色降级时输出与历史一致)。
+log_info()    { ui_info "$@"; }
+log_success() { ui_success "$@"; }
+log_warning() { ui_warn "$@"; }
+log_error()   { ui_error "$@"; }
+log_step()    { ui_stage "$@"; }
+
+# ---- 工具清单:单一事实来源(供 ensure_* 与安装器 doctor 共用)----
+# bash 3.2 无关联数组,用 "字段|字段" 字符串数组。
+# MTK_GO_TOOLS 每项:binary|module|version|desc
+MTK_GO_TOOLS=(
+    "gofumpt|mvdan.cc/gofumpt|latest|格式化"
+    "goimports|golang.org/x/tools/cmd/goimports|latest|整理导入"
+    "golangci-lint|github.com/golangci/golangci-lint/cmd/golangci-lint|${GOLANGCI_LINT_VERSION:-v1.60.3}|质量检查(含 staticcheck/ineffassign)"
+    "govulncheck|golang.org/x/vuln/cmd/govulncheck|latest|漏洞扫描"
+)
+# MTK_SYS_TOOLS 每项:binary|brew_install_hint|optional(yes/no)|desc
+MTK_SYS_TOOLS=(
+    "trivy|brew install trivy|no|整仓/前端漏洞(可 docker 回退)"
+    "cloc|brew install cloc|yes|代码行数统计"
+)
+
+# 向 PATH 追加目录（若未包含）
+add_path_if_missing() {
+    local dir="$1"
+    if [[ -n "$dir" && -d "$dir" ]]; then
+        case ":$PATH:" in
+            *":$dir:"*) ;;
+            *) export PATH="$PATH:$dir" ;;
+        esac
+    fi
+}
+
+# 判断数组中是否已包含指定元素（兼容旧版 Bash）
+contains_item() {
+    local item="$1"
+    shift
+    local element
+    for element in "$@"; do
+        if [[ "$element" == "$item" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# 确保通过 go install 安装指定工具
+ensure_go_tool() {
+    local binary_name="$1"
+    local module_path="$2"
+    local version_tag="$3"
+
+    if command -v "$binary_name" >/dev/null 2>&1; then
+        return 0
+    fi
+
+    if ! command -v go >/dev/null 2>&1; then
+        log_error "Go 未安装，无法安装 $binary_name"
+        return 1
+    fi
+
+    local install_ref
+    if [[ -n "$version_tag" && "$version_tag" != "latest" ]]; then
+        install_ref="$module_path@$version_tag"
+    else
+        install_ref="$module_path@latest"
+    fi
+
+    log_info "安装 $binary_name (go install $install_ref) ..."
+    if ! GO111MODULE=on go install "$install_ref" >/dev/null 2>&1; then
+        log_error "$binary_name 安装失败"
+        return 1
+    fi
+
+    local go_bin
+    go_bin="$(go env GOPATH 2>/dev/null)/bin"
+    add_path_if_missing "$go_bin"
+
+    if command -v "$binary_name" >/dev/null 2>&1; then
+        log_success "$binary_name 已安装"
+        return 0
+    fi
+
+    log_warning "$binary_name 已安装但当前 PATH 未包含其目录"
+    return 0
+}
+
+# 检查并安装 golangci-lint
+ensure_golangci_lint() {
+    local version="${GOLANGCI_LINT_VERSION:-v1.60.3}"
+    if [[ "${DISABLE_GOLANGCI_LINT:-0}" == "1" ]]; then
+        log_warning "golangci-lint 已禁用 (DISABLE_GOLANGCI_LINT=1)"
+        return 0
+    fi
+    ensure_go_tool "golangci-lint" "github.com/golangci/golangci-lint/cmd/golangci-lint" "$version" || log_warning "golangci-lint 安装失败"
+}
+
+# 检查并安装 staticcheck
+ensure_staticcheck() {
+    local version="${STATICCHECK_VERSION:-2023.1.6}"
+    ensure_go_tool "staticcheck" "honnef.co/go/tools/cmd/staticcheck" "$version" || log_warning "staticcheck 安装失败"
+}
+
+# 检查并安装 ineffassign
+ensure_ineffassign() {
+    local version="${INEFFASSIGN_VERSION:-latest}"
+    ensure_go_tool "ineffassign" "github.com/gordonklaus/ineffassign" "$version" || log_warning "ineffassign 安装失败"
+}
+
+# 检查并安装 goimports
+ensure_goimports() {
+    ensure_go_tool "goimports" "golang.org/x/tools/cmd/goimports" "latest" || log_warning "goimports 安装失败"
+}
+
+# 检查并安装 gofumpt
+ensure_gofumpt() {
+    ensure_go_tool "gofumpt" "mvdan.cc/gofumpt" "latest" || log_warning "gofumpt 安装失败"
+}
+
+# 获取项目根目录（兜底用；通常由 quality.mk 注入 PROJECT_ROOT=$(CURDIR)）
+get_project_root() {
+    # 1) git 顶层目录
+    local top
+    if top="$(git rev-parse --show-toplevel 2>/dev/null)"; then
+        echo "$top"
+        return 0
+    fi
+    # 2) 调用 make 时的工作目录
+    echo "$(pwd)"
+}
+
+# 获取 CPU 核心数（兼容 macOS / Linux）
+get_cpu_count() {
+    local os
+    os="$(uname -s)"
+    case "$os" in
+        Darwin)
+            sysctl -n hw.ncpu 2>/dev/null || echo 4
+            ;;
+        Linux)
+            if command -v nproc >/dev/null 2>&1; then
+                nproc
+            else
+                getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4
+            fi
+            ;;
+        *)
+            getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4
+            ;;
+    esac
+}
+
+# 自动发现包含 go.mod 的模块目录（相对 PROJECT_ROOT；根含 go.mod 输出 "."）
+discover_go_modules() {
+    local root="${1:-${PROJECT_ROOT:-$(pwd)}}"
+    local gomod d
+    while IFS= read -r gomod; do
+        [[ -z "$gomod" ]] && continue
+        d="$(cd "$(dirname "$gomod")" && pwd)"
+        if [[ "$d" == "$root" ]]; then
+            echo "."
+        else
+            echo "${d#"${root}"/}"
+        fi
+    done < <(find "$root" \
+        \( -name vendor -o -name node_modules -o -name .git -o -name testdata -o -name dist \) -prune -o \
+        -name go.mod -print 2>/dev/null | sort)
+}
+
+# 解析要处理的 Go 模块列表：优先 GO_MODULES（逗号/空格分隔），否则自动发现 go.mod
+resolve_go_modules() {
+    if [[ -n "${GO_MODULES:-}" ]]; then
+        local m
+        for m in ${GO_MODULES//,/ }; do
+            [[ -n "$m" ]] && echo "$m"
+        done
+    else
+        discover_go_modules "${PROJECT_ROOT:-$(pwd)}"
+    fi
+}
+
+export -f log_info log_success log_warning log_error log_step
+export -f add_path_if_missing contains_item ensure_go_tool
+export -f ensure_golangci_lint ensure_staticcheck ensure_ineffassign ensure_goimports ensure_gofumpt
+export -f get_project_root get_cpu_count discover_go_modules resolve_go_modules
+
+# 颜色别名:兼容直接使用 $RED/$GREEN/… 的旧脚本(run-tests.sh 等)
+RED=$C_ERR; GREEN=$C_OK; YELLOW=$C_WARN; BLUE=$C_INFO; CYAN=$C_ACCENT; NC=$C_RESET
+export RED GREEN YELLOW BLUE CYAN NC
 MTK_EOF_scripts_common_sh_
-mkdir -p "$(dirname "$DEST/scripts/format-code.sh")"
-cat > "$DEST/scripts/format-code.sh" <<'MTK_EOF_scripts_format_code_sh_'
+  mkdir -p "$(dirname "$DEST/scripts/format-code.sh")"
+  cat > "$DEST/scripts/format-code.sh" <<'MTK_EOF_scripts_format_code_sh_'
 #!/bin/bash
 
 # 代码格式化脚本（通用化）
@@ -559,8 +1014,8 @@ main() {
 
 main "$@"
 MTK_EOF_scripts_format_code_sh_
-mkdir -p "$(dirname "$DEST/scripts/quality-check.sh")"
-cat > "$DEST/scripts/quality-check.sh" <<'MTK_EOF_scripts_quality_check_sh_'
+  mkdir -p "$(dirname "$DEST/scripts/quality-check.sh")"
+  cat > "$DEST/scripts/quality-check.sh" <<'MTK_EOF_scripts_quality_check_sh_'
 #!/bin/bash
 
 # 代码质量检查脚本（通用化）
@@ -734,8 +1189,8 @@ main() {
 
 main "$@"
 MTK_EOF_scripts_quality_check_sh_
-mkdir -p "$(dirname "$DEST/scripts/race-check.sh")"
-cat > "$DEST/scripts/race-check.sh" <<'MTK_EOF_scripts_race_check_sh_'
+  mkdir -p "$(dirname "$DEST/scripts/race-check.sh")"
+  cat > "$DEST/scripts/race-check.sh" <<'MTK_EOF_scripts_race_check_sh_'
 #!/bin/bash
 
 # Go race 检测（通用化、可移植子集）
@@ -834,8 +1289,8 @@ main() {
 
 main "$@"
 MTK_EOF_scripts_race_check_sh_
-mkdir -p "$(dirname "$DEST/scripts/run-tests.sh")"
-cat > "$DEST/scripts/run-tests.sh" <<'MTK_EOF_scripts_run_tests_sh_'
+  mkdir -p "$(dirname "$DEST/scripts/run-tests.sh")"
+  cat > "$DEST/scripts/run-tests.sh" <<'MTK_EOF_scripts_run_tests_sh_'
 #!/bin/bash
 
 # 统一单元测试脚本（通用化）
@@ -1131,8 +1586,122 @@ else
     exit 1
 fi
 MTK_EOF_scripts_run_tests_sh_
-mkdir -p "$(dirname "$DEST/scripts/vuln-scan.sh")"
-cat > "$DEST/scripts/vuln-scan.sh" <<'MTK_EOF_scripts_vuln_scan_sh_'
+  mkdir -p "$(dirname "$DEST/scripts/ui.sh")"
+  cat > "$DEST/scripts/ui.sh" <<'MTK_EOF_scripts_ui_sh_'
+#!/bin/bash
+# make-toolkit UI 组件库 — 纯 bash,零依赖,兼容 bash 3.2(不使用关联数组)。
+# 三级颜色降级:truecolor / ansi8 / none。被 common.sh source,也被 install.sh 内联。
+
+[[ -n "${MTK_UI_LOADED:-}" ]] && return 0 2>/dev/null
+MTK_UI_LOADED=1
+
+MTK_COLOR_MODE=""
+C_RESET=""; C_BOLD=""; C_DIM=""
+C_ACCENT=""; C_INFO=""; C_OK=""; C_WARN=""; C_ERR=""; C_MUTED=""
+ICON_INFO="[INFO]"; ICON_OK="[OK]"; ICON_WARN="[WARN]"; ICON_ERR="[ERROR]"; ICON_STAGE="-"
+
+# 判定颜色模式并填充颜色/图标变量。
+ui_init_colors() {
+    if [[ "${MTK_NO_COLOR:-0}" == "1" || -n "${NO_COLOR:-}" || "${TERM:-dumb}" == "dumb" || ! -t 1 ]]; then
+        MTK_COLOR_MODE="none"
+    elif [[ "${COLORTERM:-}" == "truecolor" || "${COLORTERM:-}" == "24bit" ]]; then
+        MTK_COLOR_MODE="truecolor"
+    else
+        MTK_COLOR_MODE="ansi8"
+    fi
+
+    if [[ "$MTK_COLOR_MODE" == "none" ]]; then
+        C_RESET=""; C_BOLD=""; C_DIM=""
+        C_ACCENT=""; C_INFO=""; C_OK=""; C_WARN=""; C_ERR=""; C_MUTED=""
+        ICON_INFO="[INFO]"; ICON_OK="[OK]"; ICON_WARN="[WARN]"; ICON_ERR="[ERROR]"; ICON_STAGE="-"
+        return 0
+    fi
+
+    C_RESET=$'\033[0m'; C_BOLD=$'\033[1m'; C_DIM=$'\033[2m'
+    ICON_INFO="i"; ICON_OK="OK"; ICON_WARN="!"; ICON_ERR="x"; ICON_STAGE=">"
+    if [[ "$MTK_COLOR_MODE" == "truecolor" ]]; then
+        C_ACCENT=$'\033[38;2;0;191;165m'
+        C_INFO=$'\033[38;2;136;146;176m'
+        C_OK=$'\033[38;2;0;200;120m'
+        C_WARN=$'\033[38;2;255;176;32m'
+        C_ERR=$'\033[38;2;230;57;70m'
+        C_MUTED=$'\033[38;2;120;130;150m'
+    else
+        C_ACCENT=$'\033[36m'; C_INFO=$'\033[34m'; C_OK=$'\033[32m'
+        C_WARN=$'\033[33m'; C_ERR=$'\033[31m'; C_MUTED=$'\033[2m'
+    fi
+}
+
+ui_info()    { printf '%s%s%s %s\n' "$C_INFO"   "$ICON_INFO"  "$C_RESET" "$*"; }
+ui_success() { printf '%s%s%s %s\n' "$C_OK"     "$ICON_OK"    "$C_RESET" "$*"; }
+ui_warn()    { printf '%s%s%s %s\n' "$C_WARN"   "$ICON_WARN"  "$C_RESET" "$*" >&2; }
+ui_error()   { printf '%s%s%s %s\n' "$C_ERR"    "$ICON_ERR"   "$C_RESET" "$*" >&2; }
+ui_stage()   { printf '%s%s%s %s\n' "$C_ACCENT" "$ICON_STAGE" "$C_RESET" "$*"; }
+
+ui_section() {
+    printf '\n%s%s%s%s\n' "$C_BOLD" "$C_ACCENT" "$*" "$C_RESET"
+    printf '%s%s%s\n' "$C_MUTED" "----------------------------------------" "$C_RESET"
+}
+
+# ui_kv KEY VALUE — 键左对齐到 14 列。
+ui_kv() { printf '  %s%-14s%s %s\n' "$C_MUTED" "$1" "$C_RESET" "$2"; }
+
+# ui_panel — 从 stdin 读多行,加左边框(none 模式两空格缩进)。
+ui_panel() {
+    local line
+    while IFS= read -r line; do
+        if [[ "$MTK_COLOR_MODE" == "none" ]]; then
+            printf '  %s\n' "$line"
+        else
+            printf '%s|%s %s\n' "$C_MUTED" "$C_RESET" "$line"
+        fi
+    done
+}
+
+ui_banner() {
+    if [[ "$MTK_COLOR_MODE" == "none" ]]; then
+        printf 'make-toolkit -- Go 代码质量工具链\n'
+        return 0
+    fi
+    printf '\n%s%s make-toolkit %s%s\n' "$C_BOLD$C_ACCENT" "###" "###" "$C_RESET"
+    printf '%sGo 代码质量工具链%s\n' "$C_MUTED" "$C_RESET"
+}
+
+# run_with_spinner DESC -- CMD...
+# tty 下转圈;none/非 tty 打印 "DESC... done|failed"。捕获退出码,失败回显输出。
+run_with_spinner() {
+    local desc="$1"; shift
+    [[ "${1:-}" == "--" ]] && shift
+    local tmp rc; tmp="$(mktemp)"
+    if [[ "$MTK_COLOR_MODE" == "none" || ! -t 1 ]]; then
+        printf '%s... ' "$desc"
+        if "$@" >"$tmp" 2>&1; then printf 'done\n'; rc=0
+        else rc=$?; printf 'failed\n'; cat "$tmp"; fi
+        rm -f "$tmp"; return $rc
+    fi
+    local frames='|/-\' i=0 pid
+    "$@" >"$tmp" 2>&1 &
+    pid=$!
+    while kill -0 "$pid" 2>/dev/null; do
+        printf '\r%s%s%s %s' "$C_ACCENT" "${frames:$i:1}" "$C_RESET" "$desc"
+        i=$(( (i + 1) % 4 ))
+        sleep 0.1
+    done
+    wait "$pid"; rc=$?
+    if [[ $rc -eq 0 ]]; then
+        printf '\r%s%s%s %s\n' "$C_OK" "$ICON_OK" "$C_RESET" "$desc"
+    else
+        printf '\r%s%s%s %s\n' "$C_ERR" "$ICON_ERR" "$C_RESET" "$desc"; cat "$tmp"
+    fi
+    rm -f "$tmp"; return $rc
+}
+
+export MTK_COLOR_MODE C_RESET C_BOLD C_DIM C_ACCENT C_INFO C_OK C_WARN C_ERR C_MUTED
+export ICON_INFO ICON_OK ICON_WARN ICON_ERR ICON_STAGE
+export -f ui_init_colors ui_info ui_success ui_warn ui_error ui_stage ui_section ui_kv ui_panel ui_banner run_with_spinner 2>/dev/null || true
+MTK_EOF_scripts_ui_sh_
+  mkdir -p "$(dirname "$DEST/scripts/vuln-scan.sh")"
+  cat > "$DEST/scripts/vuln-scan.sh" <<'MTK_EOF_scripts_vuln_scan_sh_'
 #!/bin/bash
 
 # 依赖漏洞扫描脚本（通用化）
@@ -1325,37 +1894,18 @@ main() {
 
 main "$@"
 MTK_EOF_scripts_vuln_scan_sh_
-# ===== END embedded files =====
+}
+
+# ===== main =====
+ui_init_colors
+# 刷新旧式颜色别名(内联 common.sh 的快照早于 ui_init_colors;此处用真实值覆盖)
+RED=$C_ERR; GREEN=$C_OK; YELLOW=$C_WARN; BLUE=$C_INFO; CYAN=$C_ACCENT; NC=$C_RESET
+trap 'rc=$?; ui_error "安装中断(退出码 $rc)"; exit $rc' ERR
+ui_banner
+[[ "$SKIP_DOCTOR" == "1" ]] || mtk_doctor
+mtk_show_plan "$TARGET" "$DEST" "$VENDOR_SUBDIR"
+run_with_spinner "拷贝工具链文件" -- vendor_files
 chmod +x "$DEST"/scripts/*.sh 2>/dev/null || true
-
-MK="$TARGET/Makefile"
-INCLUDE_LINE="include ${VENDOR_SUBDIR}/quality.mk"
-if [[ ! -f "$MK" ]]; then
-  {
-    echo "# >>> make-toolkit >>>"
-    echo "# 留空则自动发现 go.mod；多模块可显式声明，例如："
-    echo "# GO_MODULES := svc-a svc-b"
-    echo "$INCLUDE_LINE"
-    echo "# <<< make-toolkit <<<"
-  } > "$MK"
-  echo "→ 已创建 Makefile 并接入工具链"
-elif grep -qF "$INCLUDE_LINE" "$MK"; then
-  echo "→ Makefile 已包含 include（脚本已刷新），跳过接线"
-else
-  {
-    echo ""
-    echo "# >>> make-toolkit >>>"
-    echo "$INCLUDE_LINE"
-    echo "# <<< make-toolkit <<<"
-  } >> "$MK"
-  echo "→ 已向现有 Makefile 追加 include"
-fi
-
-GI="$TARGET/.gitignore"
-for pat in "coverage_results/" ".build-cache/"; do
-  if [[ ! -f "$GI" ]] || ! grep -qxF "$pat" "$GI" 2>/dev/null; then
-    echo "$pat" >> "$GI"
-  fi
-done
-
-echo "✓ 完成。下一步： (cd \"$TARGET\" && make tk-help)"
+mtk_link_makefile "$TARGET" "$VENDOR_SUBDIR"
+mtk_update_gitignore "$TARGET"
+mtk_show_result "$TARGET"
