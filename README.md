@@ -32,19 +32,19 @@
 
 ```bash
 # 从 GitHub 直接安装到当前目录
-curl -fsSL https://raw.githubusercontent.com/alphayan/make-toolkit/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/alphayan/make-toolkit/refs/heads/main/install.sh | bash
 
 # 从 GitHub 直接安装到指定项目
-curl -fsSL https://raw.githubusercontent.com/alphayan/make-toolkit/main/install.sh | bash -s -- /path/to/your-project
+curl -fsSL https://raw.githubusercontent.com/alphayan/make-toolkit/refs/heads/main/install.sh | bash -s -- /path/to/your-project
 
 # 自定义 vendor 子目录（默认 make-toolkit）
-curl -fsSL https://raw.githubusercontent.com/alphayan/make-toolkit/main/install.sh | bash -s -- --into tools/mtk /path/to/your-project
+curl -fsSL https://raw.githubusercontent.com/alphayan/make-toolkit/refs/heads/main/install.sh | bash -s -- --into tools/mtk /path/to/your-project
 ```
 
 如果想先审阅安装器，也可以下载后再执行：
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/alphayan/make-toolkit/main/install.sh
+curl -fsSLO https://raw.githubusercontent.com/alphayan/make-toolkit/refs/heads/main/install.sh
 bash install.sh /path/to/your-project
 bash install.sh --no-color /path/to/your-project       # 关闭彩色输出（CI / 重定向自动也会降级）
 bash install.sh --skip-doctor /path/to/your-project    # 跳过装前环境自检
