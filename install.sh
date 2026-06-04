@@ -1849,17 +1849,25 @@ vuln_scan() {
     log_info "💡 提示: 如需跳过漏洞扫描可使用 SKIP_VULN=1"
 
     local final_rc=0
+    local gv_rc=0
+    local trivy_rc=0
 
-    run_govulncheck
-    local gv_rc=$?
+    if run_govulncheck; then
+        gv_rc=0
+    else
+        gv_rc=$?
+    fi
     if (( gv_rc != 0 )); then
         final_rc=1
     fi
 
     echo ""
 
-    run_trivy
-    local trivy_rc=$?
+    if run_trivy; then
+        trivy_rc=0
+    else
+        trivy_rc=$?
+    fi
     if (( trivy_rc != 0 )); then
         final_rc=1
     fi
