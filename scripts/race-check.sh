@@ -40,8 +40,11 @@ run_race_for_module() {
         return 0
     fi
 
-    # 并行逐包执行 -race 测试
-    echo "$pkgs" | xargs -n 1 -P "$cpu_n" -I {} sh -c "go test -race -count=1 -timeout=${timeout} {}"
+    # 并行逐包执行 -race 测试。
+    # 包路径与 timeout 作为位置参数传入内层 sh，绝不拼进脚本字符串，
+    # 避免含元字符的包路径被 shell 二次解析（命令注入 / 解析错误）。
+    echo "$pkgs" | xargs -n 1 -P "$cpu_n" -I {} \
+        sh -c 'go test -race -count=1 -timeout="$1" "$2"' mtk-race "$timeout" {}
 }
 
 show_help() {
