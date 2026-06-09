@@ -1216,8 +1216,11 @@ run_race_for_module() {
         return 0
     fi
 
-    # 并行逐包执行 -race 测试
-    echo "$pkgs" | xargs -n 1 -P "$cpu_n" -I {} sh -c "go test -race -count=1 -timeout=${timeout} {}"
+    # 并行逐包执行 -race 测试。
+    # 包路径与 timeout 作为位置参数传入内层 sh，绝不拼进脚本字符串，
+    # 避免含元字符的包路径被 shell 二次解析（命令注入 / 解析错误）。
+    echo "$pkgs" | xargs -n 1 -P "$cpu_n" -I {} \
+        sh -c 'go test -race -count=1 -timeout="$1" "$2"' mtk-race "$timeout" {}
 }
 
 show_help() {
@@ -1422,23 +1425,26 @@ run_module_tests() {
     tmp_output=$(mktemp)
     local tmp_coverage=""
 
-    local go_test_cmd="go test -timeout=10m -parallel=1"
+    # 用数组承载命令，逐个参数原样传给 go，绝不经过 shell 二次解析。
+    # 历史实现把包路径/覆盖率文件名拼成字符串后 eval，导致恶意目录名
+    # （如 "$(touch x)"）或含空格/元字符的路径被当作命令执行（命令注入）。
+    local go_test_cmd=(go test -timeout=10m -parallel=1)
     for pkg in "${packages_array[@]}"; do
-        go_test_cmd="$go_test_cmd $pkg"
+        go_test_cmd+=("$pkg")
     done
 
     if [[ "$SHORT_MODE" == true ]]; then
-        go_test_cmd="$go_test_cmd -short"
+        go_test_cmd+=(-short)
     fi
 
     if [[ "$GENERATE_COVERAGE" == true ]]; then
         tmp_coverage="$COVERAGE_DIR/${module//\//_}_coverage.out"
-        go_test_cmd="$go_test_cmd -coverprofile=$tmp_coverage"
+        go_test_cmd+=("-coverprofile=$tmp_coverage")
     fi
 
     if [[ "$VERBOSE_MODE" == true ]]; then
         echo -e "${BLUE}正在运行 $module 测试...${NC}"
-        if eval "$go_test_cmd"; then
+        if "${go_test_cmd[@]}"; then
             echo -e "${GREEN}✓ $module 测试通过${NC}"
             if [[ "$GENERATE_COVERAGE" == true ]] && [ -f "$tmp_coverage" ]; then
                 local coverage
@@ -1458,7 +1464,7 @@ run_module_tests() {
         fi
     else
         echo -e "${BLUE}正在运行 $module 测试...${NC}"
-        if eval "$go_test_cmd" > "$tmp_output" 2>&1; then
+        if "${go_test_cmd[@]}" > "$tmp_output" 2>&1; then
             echo -e "${GREEN}✓ $module 测试通过${NC}"
             if [[ "$GENERATE_COVERAGE" == true ]] && [ -f "$tmp_coverage" ]; then
                 local coverage
@@ -1798,25 +1804,26 @@ run_trivy() {
            -o -name ".env" -o -name ".env.*" \) \
         -print 2>/dev/null || true)
 
-    # 拼接参数（本机 / 容器分别用绝对路径与 /src 前缀）
-    local NATIVE_ARGS="" DOCKER_ARGS=""
+    # 拼接参数（本机 / 容器分别用绝对路径与 /src 前缀）。
+    # 用数组逐参传递，避免含空格/元字符的路径被 word splitting 拆错或注入额外参数。
+    local NATIVE_ARGS=() DOCKER_ARGS=()
     local r
     for r in "${skip_rel[@]}"; do
-        NATIVE_ARGS+=" --skip-dirs ${PROJECT_ROOT}/${r}"
-        DOCKER_ARGS+=" --skip-dirs /src/${r}"
+        NATIVE_ARGS+=(--skip-dirs "${PROJECT_ROOT}/${r}")
+        DOCKER_ARGS+=(--skip-dirs "/src/${r}")
     done
     for r in "${skip_files_rel[@]}"; do
-        NATIVE_ARGS+=" --skip-files ${PROJECT_ROOT}/${r}"
-        DOCKER_ARGS+=" --skip-files /src/${r}"
+        NATIVE_ARGS+=(--skip-files "${PROJECT_ROOT}/${r}")
+        DOCKER_ARGS+=(--skip-files "/src/${r}")
     done
 
     local scan_rc=0
     if command -v trivy >/dev/null 2>&1; then
         log_info "使用本机 Trivy 扫描"
         set +e
-        trivy fs --scanners ${scanners} --no-progress --ignore-unfixed --exit-code 1 --severity ${severity} \
+        trivy fs --scanners "${scanners}" --no-progress --ignore-unfixed --exit-code 1 --severity "${severity}" \
             --cache-dir "$trivy_cache_dir" \
-            ${NATIVE_ARGS} \
+            "${NATIVE_ARGS[@]}" \
             "${PROJECT_ROOT}"
         scan_rc=$?
         set -e
@@ -1824,9 +1831,9 @@ run_trivy() {
         local trivy_image="${TRIVY_IMAGE:-aquasec/trivy:latest}"
         log_info "使用 Trivy 容器扫描 (${trivy_image})"
         set +e
-        docker run --rm -v "${PROJECT_ROOT}:/src" -w /src ${trivy_image} \
-            fs --scanners ${scanners} --no-progress --ignore-unfixed --exit-code 1 --severity ${severity} \
-            ${DOCKER_ARGS} \
+        docker run --rm -v "${PROJECT_ROOT}:/src" -w /src "${trivy_image}" \
+            fs --scanners "${scanners}" --no-progress --ignore-unfixed --exit-code 1 --severity "${severity}" \
+            "${DOCKER_ARGS[@]}" \
             /src
         scan_rc=$?
         set -e

@@ -146,23 +146,26 @@ run_module_tests() {
     tmp_output=$(mktemp)
     local tmp_coverage=""
 
-    local go_test_cmd="go test -timeout=10m -parallel=1"
+    # 用数组承载命令，逐个参数原样传给 go，绝不经过 shell 二次解析。
+    # 历史实现把包路径/覆盖率文件名拼成字符串后 eval，导致恶意目录名
+    # （如 "$(touch x)"）或含空格/元字符的路径被当作命令执行（命令注入）。
+    local go_test_cmd=(go test -timeout=10m -parallel=1)
     for pkg in "${packages_array[@]}"; do
-        go_test_cmd="$go_test_cmd $pkg"
+        go_test_cmd+=("$pkg")
     done
 
     if [[ "$SHORT_MODE" == true ]]; then
-        go_test_cmd="$go_test_cmd -short"
+        go_test_cmd+=(-short)
     fi
 
     if [[ "$GENERATE_COVERAGE" == true ]]; then
         tmp_coverage="$COVERAGE_DIR/${module//\//_}_coverage.out"
-        go_test_cmd="$go_test_cmd -coverprofile=$tmp_coverage"
+        go_test_cmd+=("-coverprofile=$tmp_coverage")
     fi
 
     if [[ "$VERBOSE_MODE" == true ]]; then
         echo -e "${BLUE}正在运行 $module 测试...${NC}"
-        if eval "$go_test_cmd"; then
+        if "${go_test_cmd[@]}"; then
             echo -e "${GREEN}✓ $module 测试通过${NC}"
             if [[ "$GENERATE_COVERAGE" == true ]] && [ -f "$tmp_coverage" ]; then
                 local coverage
@@ -182,7 +185,7 @@ run_module_tests() {
         fi
     else
         echo -e "${BLUE}正在运行 $module 测试...${NC}"
-        if eval "$go_test_cmd" > "$tmp_output" 2>&1; then
+        if "${go_test_cmd[@]}" > "$tmp_output" 2>&1; then
             echo -e "${GREEN}✓ $module 测试通过${NC}"
             if [[ "$GENERATE_COVERAGE" == true ]] && [ -f "$tmp_coverage" ]; then
                 local coverage

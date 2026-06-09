@@ -110,25 +110,26 @@ run_trivy() {
            -o -name ".env" -o -name ".env.*" \) \
         -print 2>/dev/null || true)
 
-    # 拼接参数（本机 / 容器分别用绝对路径与 /src 前缀）
-    local NATIVE_ARGS="" DOCKER_ARGS=""
+    # 拼接参数（本机 / 容器分别用绝对路径与 /src 前缀）。
+    # 用数组逐参传递，避免含空格/元字符的路径被 word splitting 拆错或注入额外参数。
+    local NATIVE_ARGS=() DOCKER_ARGS=()
     local r
     for r in "${skip_rel[@]}"; do
-        NATIVE_ARGS+=" --skip-dirs ${PROJECT_ROOT}/${r}"
-        DOCKER_ARGS+=" --skip-dirs /src/${r}"
+        NATIVE_ARGS+=(--skip-dirs "${PROJECT_ROOT}/${r}")
+        DOCKER_ARGS+=(--skip-dirs "/src/${r}")
     done
     for r in "${skip_files_rel[@]}"; do
-        NATIVE_ARGS+=" --skip-files ${PROJECT_ROOT}/${r}"
-        DOCKER_ARGS+=" --skip-files /src/${r}"
+        NATIVE_ARGS+=(--skip-files "${PROJECT_ROOT}/${r}")
+        DOCKER_ARGS+=(--skip-files "/src/${r}")
     done
 
     local scan_rc=0
     if command -v trivy >/dev/null 2>&1; then
         log_info "使用本机 Trivy 扫描"
         set +e
-        trivy fs --scanners ${scanners} --no-progress --ignore-unfixed --exit-code 1 --severity ${severity} \
+        trivy fs --scanners "${scanners}" --no-progress --ignore-unfixed --exit-code 1 --severity "${severity}" \
             --cache-dir "$trivy_cache_dir" \
-            ${NATIVE_ARGS} \
+            "${NATIVE_ARGS[@]}" \
             "${PROJECT_ROOT}"
         scan_rc=$?
         set -e
@@ -136,9 +137,9 @@ run_trivy() {
         local trivy_image="${TRIVY_IMAGE:-aquasec/trivy:latest}"
         log_info "使用 Trivy 容器扫描 (${trivy_image})"
         set +e
-        docker run --rm -v "${PROJECT_ROOT}:/src" -w /src ${trivy_image} \
-            fs --scanners ${scanners} --no-progress --ignore-unfixed --exit-code 1 --severity ${severity} \
-            ${DOCKER_ARGS} \
+        docker run --rm -v "${PROJECT_ROOT}:/src" -w /src "${trivy_image}" \
+            fs --scanners "${scanners}" --no-progress --ignore-unfixed --exit-code 1 --severity "${severity}" \
+            "${DOCKER_ARGS[@]}" \
             /src
         scan_rc=$?
         set -e
