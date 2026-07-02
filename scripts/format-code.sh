@@ -3,6 +3,7 @@
 # 代码格式化脚本（通用化）
 # 使用 gofumpt（Go 增强格式化）、goimports 和 modernize 将代码升级到最新 Go 风格。
 # 模块列表来自 FORMAT_MODULES / GO_MODULES，留空则自动发现 go.mod。
+# MODERNIZE_VERSION 可钉住 modernize 版本（默认 latest，即 gopls 模块的最新版）。
 
 # 注意：不在全局设置 set -e，以便并发执行时能正确收集错误
 
@@ -14,29 +15,7 @@ PROJECT_ROOT="${PROJECT_ROOT:-$(get_project_root)}"
 
 # 默认配置
 : "${DRY_RUN:=0}"
-
-# 收集模块内所有 Go 目录
-collect_go_dirs() {
-    # 忽略 SIGPIPE 信号，防止管道中断导致 echo 失败
-    trap '' PIPE
-
-    local module="$1"
-    local module_path="$PROJECT_ROOT/$module"
-
-    if [[ ! -d "$module_path" ]]; then
-        return 0
-    fi
-
-    while IFS= read -r dir; do
-        if [[ -n "$dir" && "$dir" != "./e2e"* && "$dir" != "./docs"* && "$dir" != "./query"* ]]; then
-            dir="${dir#./}"
-            if [[ "$dir" != "." && "$dir" != "e2e" && "$dir" != "docs" && "$dir" != "query" ]]; then
-                # 忽略 stderr 并确保失败不会中断脚本
-                echo "$dir" 2>/dev/null || true
-            fi
-        fi
-    done < <(cd "$module_path" && find . -name "*.go" -not -path "./e2e/*" -not -path "./docs/*" -not -path "./query/*" 2>/dev/null | xargs dirname 2>/dev/null | sort -u 2>/dev/null | sed 's|^\./||' 2>/dev/null | sed 's|^$|.|' 2>/dev/null || true)
-}
+: "${MODERNIZE_VERSION:=latest}"
 
 # 对单个模块执行格式化
 format_module() {
@@ -51,19 +30,16 @@ format_module() {
     log_info "模块 $module: 开始代码格式化..."
 
     # 步骤 1: modernize - 升级到最新 Go 风格（可选）
+    # 所有启用的分析器一次跑完（单次 go run，避免重复解析/构建 gopls 模块）
     if [[ "${SKIP_MODERNIZE:-0}" != "1" ]]; then
         log_info "模块 $module: 执行 modernize 代码风格升级..."
-
-        # 优先应用 efaceany 类别（interface{} -> any）
-        if ! (cd "$module_dir" && go run golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@latest -any -fix -test ./...); then
-            log_warning "模块 $module: modernize any 执行失败，继续"
+        local modernize_args=(-any -minmax -slicescontains -slicessort -stringscut -stringscutprefix -forvar -rangeint -test ./...)
+        if [[ "${DRY_RUN}" != "1" ]]; then
+            modernize_args=(-fix "${modernize_args[@]}")
         fi
-
-        # 然后应用其他现代化改进（启用推荐的分析器）
-        if ! (cd "$module_dir" && go run golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@latest \
-            -minmax -slicescontains -slicessort -stringscut -stringscutprefix -forvar -rangeint \
-            -fix -test ./...); then
-            log_warning "模块 $module: modernize 其他类别执行失败，继续"
+        if ! (cd "$module_dir" && go run "golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@${MODERNIZE_VERSION}" \
+            "${modernize_args[@]}"); then
+            log_warning "模块 $module: modernize 执行失败，继续"
         fi
     else
         log_info "模块 $module: modernize 跳过（SKIP_MODERNIZE=1）"
@@ -72,7 +48,11 @@ format_module() {
     # 步骤 2: gofumpt - Go 增强格式化（比 gofmt 更严格）
     log_info "模块 $module: 执行 gofumpt 增强格式化..."
     if command -v gofumpt >/dev/null 2>&1; then
-        if ! (cd "$module_dir" && gofumpt -w .); then
+        local gofumpt_args=(-w .)
+        if [[ "${DRY_RUN}" == "1" ]]; then
+            gofumpt_args=(-d .)
+        fi
+        if ! (cd "$module_dir" && gofumpt "${gofumpt_args[@]}"); then
             log_warning "模块 $module: gofumpt 格式化失败，继续执行其他工具"
         fi
     else
@@ -85,7 +65,11 @@ format_module() {
     # 步骤 3: goimports - 整理导入并自动插入缺失的导入
     if command -v goimports >/dev/null 2>&1; then
         log_info "模块 $module: 执行 goimports 整理导入..."
-        if ! (cd "$module_dir" && goimports -w .); then
+        local goimports_args=(-w .)
+        if [[ "${DRY_RUN}" == "1" ]]; then
+            goimports_args=(-d .)
+        fi
+        if ! (cd "$module_dir" && goimports "${goimports_args[@]}"); then
             log_warning "模块 $module: goimports 执行失败，继续"
         fi
     else

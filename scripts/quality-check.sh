@@ -3,6 +3,7 @@
 # 代码质量检查脚本（通用化）
 # 执行 go vet 与 golangci-lint（已涵盖 staticcheck、ineffassign 等）。
 # 模块列表来自 GO_MODULES，留空则自动发现 go.mod。
+# QUALITY_EXCLUDE 排除的目录正则（默认 'e2e|docs'，按路径段匹配，同 RACE_EXCLUDE 风格）。
 
 set -e
 
@@ -13,39 +14,27 @@ source "$SCRIPT_DIR/common.sh"
 PROJECT_ROOT="${PROJECT_ROOT:-$(get_project_root)}"
 
 # 默认配置
-: "${GOLANGCI_LINT_VERSION:=v1.60.3}"
 : "${GOLANGCI_TIMEOUT:=5m}"
+: "${QUALITY_EXCLUDE:=e2e|docs}"
 
-# 收集模块内所有 Go 目录
-collect_changed_go_dirs() {
-    local module="$1"
-    local module_path="$PROJECT_ROOT/$module"
-
-    if [[ ! -d "$module_path" ]]; then
-        echo "."
-        return 0
-    fi
-
-    local dirs=()
+# 收集模块内待检查的包模式：模块根有 .go 输出 "."，其余含 .go 的目录输出 "./dir/..."；
+# 排除路径段命中 QUALITY_EXCLUDE 的目录，以及 vendor/node_modules/testdata/.git。
+collect_quality_packages() {
+    local module_dir="$1"
+    local dir
     while IFS= read -r dir; do
-        if [[ -n "$dir" && "$dir" != "./e2e"* && "$dir" != "./docs"* && "$dir" != "./query"* ]]; then
-            dir="${dir#./}"
-            if [[ "$dir" != "." && "$dir" != "e2e" && "$dir" != "docs" && "$dir" != "query" ]]; then
-                if ! contains_item "$dir" "${dirs[@]}"; then
-                    dirs+=("$dir")
-                fi
-            fi
+        [[ -z "$dir" ]] && continue
+        if [[ "$dir" == "." ]]; then
+            echo "."
+        else
+            echo "./$dir/..."
         fi
-    done < <(cd "$module_path" && find . -name "*.go" -not -path "./e2e/*" -not -path "./docs/*" -not -path "./query/*" | xargs dirname | sort -u | sed 's|^\./||' | sed 's|^$|.|')
-
-    if [[ ${#dirs[@]} -eq 0 ]]; then
-        echo "."
-    else
-        local d
-        for d in "${dirs[@]}"; do
-            echo "$d"
-        done
-    fi
+    done < <(cd "$module_dir" && \
+        find . \( -name vendor -o -name node_modules -o -name testdata -o -name .git \) -prune -o \
+            -type f -name "*.go" -print 2>/dev/null \
+        | sed 's|/[^/]*$||; s|^\./||' \
+        | sort -u \
+        | grep -Ev "(^|/)(${QUALITY_EXCLUDE})(/|\$)" || true)
 }
 
 # 针对单个 Go 模块执行质量检查
@@ -59,42 +48,15 @@ run_go_module_quality_checks() {
 
     log_info "模块 $module: 开始质量检查"
 
-    local dir_targets=()
-    while IFS= read -r dir_line; do
-        if [[ -z "$dir_line" ]]; then
-            continue
-        fi
-        if [[ "$dir_line" == e2e* ]] || [[ "$dir_line" == query* ]]; then
-            continue
-        fi
-        dir_targets+=("$dir_line")
-    done < <(collect_changed_go_dirs "$module")
-
-    if [[ ${#dir_targets[@]} -eq 0 ]]; then
-        dir_targets=(".")
-    fi
-
     local packages=()
-    for dir in "${dir_targets[@]}"; do
-        local pkg
-        if [[ "$dir" == "." ]]; then
-            while IFS= read -r pkg_path; do
-                if [[ -n "$pkg_path" && "$pkg_path" != "./e2e"* && "$pkg_path" != "./docs"* && "$pkg_path" != "./query"* ]]; then
-                    if ! contains_item "$pkg_path" "${packages[@]}"; then
-                        packages+=("$pkg_path")
-                    fi
-                fi
-            done < <(cd "$module_dir" && find . -name "*.go" -not -path "./e2e/*" -not -path "./docs/*" -not -path "./query/*" | xargs dirname | sort -u | sed 's|^\./||' | sed 's|^$|.|' | sed 's|^|./|')
-        else
-            pkg="./$dir/..."
-            if ! contains_item "$pkg" "${packages[@]}"; then
-                packages+=("$pkg")
-            fi
-        fi
-    done
+    local pkg
+    while IFS= read -r pkg; do
+        [[ -n "$pkg" ]] && packages+=("$pkg")
+    done < <(collect_quality_packages "$module_dir")
 
     if [[ ${#packages[@]} -eq 0 ]]; then
-        packages=("./...")
+        log_info "模块 $module: 无待检查的 Go 包（排除 ${QUALITY_EXCLUDE} 后），跳过"
+        return 0
     fi
 
     # 步骤 1: go vet

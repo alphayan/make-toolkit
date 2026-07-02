@@ -40,6 +40,10 @@ done
 TARGET="${TARGET:-$PWD}"
 if [[ ! -d "$TARGET" ]]; then echo "目标目录不存在: $TARGET" >&2; exit 1; fi
 TARGET="$(cd "$TARGET" && pwd)"
+if [[ "$VENDOR_SUBDIR" == "." || "$VENDOR_SUBDIR" == /* || "$VENDOR_SUBDIR" =~ (^|/)\.\.(/|$) ]]; then
+  echo "--into 必须是目标项目内的相对子目录: $VENDOR_SUBDIR" >&2
+  exit 1
+fi
 DEST="$TARGET/$VENDOR_SUBDIR"
 
 # ===== embedded: scripts/ui.sh =====
@@ -160,8 +164,9 @@ export -f ui_init_colors ui_info ui_success ui_warn ui_error ui_stage ui_section
 # make-toolkit 公共函数库
 # 提供日志、工具安装、Go 模块发现等公共功能。
 # 来源：从一套多模块 Go 项目的 deploy/scripts 通用化而来。
-
-set -e
+#
+# 本文件是被 source 的库,不设置 set -e——错误模式由各消费脚本自行决定
+# (format-code.sh 依赖关闭 set -e 以并发收集各模块结果)。
 
 # 加载 UI 原语(同目录)。内嵌进 install.sh 或从 stdin 执行时守卫跳过,
 # 复用已就地定义的 ui_*;作为 vendor 文件时正常 source。
@@ -182,16 +187,28 @@ log_warning() { ui_warn "$@"; }
 log_error()   { ui_error "$@"; }
 log_step()    { ui_stage "$@"; }
 
+# ---- golangci-lint 版本与模块路径:单一事实来源 ----
+# v2 起 Go 模块路径带 /vN 主版本后缀,须按版本号推导;v1.* 沿用旧路径。
+# 回退 v1:GOLANGCI_LINT_VERSION=v1.64.8(注意 v1 与 v2 的 .golangci.yml 格式不同)。
+MTK_GOLANGCI_VERSION="${GOLANGCI_LINT_VERSION:-v2.12.2}"
+case "$MTK_GOLANGCI_VERSION" in
+    v1.*) MTK_GOLANGCI_MODULE="github.com/golangci/golangci-lint/cmd/golangci-lint" ;;
+    v*.*) MTK_GOLANGCI_MODULE="github.com/golangci/golangci-lint/${MTK_GOLANGCI_VERSION%%.*}/cmd/golangci-lint" ;;
+    *)    MTK_GOLANGCI_MODULE="github.com/golangci/golangci-lint/v2/cmd/golangci-lint" ;;
+esac
+
 # ---- 工具清单:单一事实来源(供 ensure_* 与安装器 doctor 共用)----
 # bash 3.2 无关联数组,用 "字段|字段" 字符串数组。
 # MTK_GO_TOOLS 每项:binary|module|version|desc
+# shellcheck disable=SC2034  # 由内联进 install.sh 的 installer/body.sh 消费
 MTK_GO_TOOLS=(
     "gofumpt|mvdan.cc/gofumpt|latest|格式化"
     "goimports|golang.org/x/tools/cmd/goimports|latest|整理导入"
-    "golangci-lint|github.com/golangci/golangci-lint/cmd/golangci-lint|${GOLANGCI_LINT_VERSION:-v1.60.3}|质量检查(含 staticcheck/ineffassign)"
+    "golangci-lint|${MTK_GOLANGCI_MODULE}|${MTK_GOLANGCI_VERSION}|质量检查(含 staticcheck/ineffassign)"
     "govulncheck|golang.org/x/vuln/cmd/govulncheck|latest|漏洞扫描"
 )
 # MTK_SYS_TOOLS 每项:binary|brew_install_hint|optional(yes/no)|desc
+# shellcheck disable=SC2034  # 同上,供 installer/body.sh 的 doctor 使用
 MTK_SYS_TOOLS=(
     "trivy|brew install trivy|no|整仓/前端漏洞(可 docker 回退)"
     "cloc|brew install cloc|yes|代码行数统计"
@@ -262,14 +279,13 @@ ensure_go_tool() {
     return 0
 }
 
-# 检查并安装 golangci-lint
+# 检查并安装 golangci-lint(版本/模块路径见顶部 MTK_GOLANGCI_*)
 ensure_golangci_lint() {
-    local version="${GOLANGCI_LINT_VERSION:-v1.60.3}"
     if [[ "${DISABLE_GOLANGCI_LINT:-0}" == "1" ]]; then
         log_warning "golangci-lint 已禁用 (DISABLE_GOLANGCI_LINT=1)"
         return 0
     fi
-    ensure_go_tool "golangci-lint" "github.com/golangci/golangci-lint/cmd/golangci-lint" "$version" || log_warning "golangci-lint 安装失败"
+    ensure_go_tool "golangci-lint" "$MTK_GOLANGCI_MODULE" "$MTK_GOLANGCI_VERSION" || log_warning "golangci-lint 安装失败"
 }
 
 # 检查并安装 goimports
@@ -344,6 +360,7 @@ resolve_go_modules() {
     fi
 }
 
+export MTK_GOLANGCI_VERSION MTK_GOLANGCI_MODULE
 export -f log_info log_success log_warning log_error log_step
 export -f add_path_if_missing contains_item ensure_go_tool
 export -f ensure_golangci_lint ensure_goimports ensure_gofumpt
@@ -484,7 +501,7 @@ vendor_files() {
   cat > "$DEST/quality.mk" <<'MTK_EOF_quality_mk_'
 # make-toolkit — 可复用的 Go 代码质量工具链
 #
-# 用法：在你项目根目录的 Makefile 里 include（建议先把本仓库加为 git submodule）：
+# 用法：安装器会把本文件拷进目标项目；在项目根目录的 Makefile 里 include：
 #
 #     include tools/make-toolkit/quality.mk
 #
@@ -507,18 +524,21 @@ FORMAT_MODULES   ?=
 TEST_MODULES     ?=
 MODULE_ALIASES   ?=
 COVERAGE_EXCLUDE ?=
+QUALITY_EXCLUDE  ?= e2e|docs
 VULN_SEVERITY    ?= CRITICAL,HIGH
 TRIVY_SCANNERS   ?= vuln
 TRIVY_SKIP_DIRS  ?=
 RACE_TIMEOUT     ?= 5m
 RACE_EXCLUDE     ?= e2e|docs
 GOLANGCI_TIMEOUT ?= 5m
+TEST_TIMEOUT     ?= 10m
+TEST_PARALLEL    ?= 1
 
 # 导出给脚本（未赋值的导出为空字符串，脚本内有默认值，无副作用）
 export PROJECT_ROOT GO_MODULES FORMAT_MODULES TEST_MODULES MODULE_ALIASES COVERAGE_EXCLUDE
-export VULN_SEVERITY TRIVY_SCANNERS TRIVY_SKIP_DIRS TRIVY_IMAGE
+export QUALITY_EXCLUDE VULN_SEVERITY TRIVY_SCANNERS TRIVY_SKIP_DIRS TRIVY_IMAGE
 export RACE_TIMEOUT RACE_EXCLUDE RACE_MODULES
-export GOLANGCI_TIMEOUT GOLANGCI_LINT_VERSION
+export GOLANGCI_TIMEOUT GOLANGCI_LINT_VERSION TEST_TIMEOUT TEST_PARALLEL MODERNIZE_VERSION
 export SKIP_VULN SKIP_CHECKS DISABLE_GOLANGCI_LINT SKIP_MODERNIZE WITH_TESTS
 
 .PHONY: tk-help format quality-check scan lint test test-verbose test-coverage race-check cloc
@@ -537,7 +557,8 @@ tk-help:
 	@echo ""
 	@echo "配置变量（include 前覆盖；留空自动发现 go.mod）："
 	@echo "  GO_MODULES FORMAT_MODULES TEST_MODULES MODULE_ALIASES COVERAGE_EXCLUDE"
-	@echo "  VULN_SEVERITY TRIVY_SCANNERS TRIVY_SKIP_DIRS"
+	@echo "  QUALITY_EXCLUDE VULN_SEVERITY TRIVY_SCANNERS TRIVY_SKIP_DIRS"
+	@echo "  TEST_TIMEOUT TEST_PARALLEL GOLANGCI_LINT_VERSION MODERNIZE_VERSION"
 	@echo "  开关：SKIP_VULN=1 SKIP_CHECKS=1 DISABLE_GOLANGCI_LINT=1 SKIP_MODERNIZE=1"
 
 format:
@@ -607,7 +628,7 @@ else
     if [[ "$INCLUDE_TESTS" == "1" ]]; then
         GO_FILES=$(count -name "*.go")
     else
-        GO_FILES=$(find . -name "*.go" ! -path "*/.git/*" ! -path "*/vendor/*" ! -name "*_test.go" 2>/dev/null | wc -l | tr -d ' ')
+        GO_FILES=$(count -name "*.go" ! -name "*_test.go")
     fi
     TS_FILES=$(count \( -name "*.ts" -o -name "*.tsx" \))
     JS_FILES=$(count -name "*.js")
@@ -626,8 +647,9 @@ MTK_EOF_scripts_cloc_sh_
 # make-toolkit 公共函数库
 # 提供日志、工具安装、Go 模块发现等公共功能。
 # 来源：从一套多模块 Go 项目的 deploy/scripts 通用化而来。
-
-set -e
+#
+# 本文件是被 source 的库,不设置 set -e——错误模式由各消费脚本自行决定
+# (format-code.sh 依赖关闭 set -e 以并发收集各模块结果)。
 
 # 加载 UI 原语(同目录)。内嵌进 install.sh 或从 stdin 执行时守卫跳过,
 # 复用已就地定义的 ui_*;作为 vendor 文件时正常 source。
@@ -648,16 +670,28 @@ log_warning() { ui_warn "$@"; }
 log_error()   { ui_error "$@"; }
 log_step()    { ui_stage "$@"; }
 
+# ---- golangci-lint 版本与模块路径:单一事实来源 ----
+# v2 起 Go 模块路径带 /vN 主版本后缀,须按版本号推导;v1.* 沿用旧路径。
+# 回退 v1:GOLANGCI_LINT_VERSION=v1.64.8(注意 v1 与 v2 的 .golangci.yml 格式不同)。
+MTK_GOLANGCI_VERSION="${GOLANGCI_LINT_VERSION:-v2.12.2}"
+case "$MTK_GOLANGCI_VERSION" in
+    v1.*) MTK_GOLANGCI_MODULE="github.com/golangci/golangci-lint/cmd/golangci-lint" ;;
+    v*.*) MTK_GOLANGCI_MODULE="github.com/golangci/golangci-lint/${MTK_GOLANGCI_VERSION%%.*}/cmd/golangci-lint" ;;
+    *)    MTK_GOLANGCI_MODULE="github.com/golangci/golangci-lint/v2/cmd/golangci-lint" ;;
+esac
+
 # ---- 工具清单:单一事实来源(供 ensure_* 与安装器 doctor 共用)----
 # bash 3.2 无关联数组,用 "字段|字段" 字符串数组。
 # MTK_GO_TOOLS 每项:binary|module|version|desc
+# shellcheck disable=SC2034  # 由内联进 install.sh 的 installer/body.sh 消费
 MTK_GO_TOOLS=(
     "gofumpt|mvdan.cc/gofumpt|latest|格式化"
     "goimports|golang.org/x/tools/cmd/goimports|latest|整理导入"
-    "golangci-lint|github.com/golangci/golangci-lint/cmd/golangci-lint|${GOLANGCI_LINT_VERSION:-v1.60.3}|质量检查(含 staticcheck/ineffassign)"
+    "golangci-lint|${MTK_GOLANGCI_MODULE}|${MTK_GOLANGCI_VERSION}|质量检查(含 staticcheck/ineffassign)"
     "govulncheck|golang.org/x/vuln/cmd/govulncheck|latest|漏洞扫描"
 )
 # MTK_SYS_TOOLS 每项:binary|brew_install_hint|optional(yes/no)|desc
+# shellcheck disable=SC2034  # 同上,供 installer/body.sh 的 doctor 使用
 MTK_SYS_TOOLS=(
     "trivy|brew install trivy|no|整仓/前端漏洞(可 docker 回退)"
     "cloc|brew install cloc|yes|代码行数统计"
@@ -728,14 +762,13 @@ ensure_go_tool() {
     return 0
 }
 
-# 检查并安装 golangci-lint
+# 检查并安装 golangci-lint(版本/模块路径见顶部 MTK_GOLANGCI_*)
 ensure_golangci_lint() {
-    local version="${GOLANGCI_LINT_VERSION:-v1.60.3}"
     if [[ "${DISABLE_GOLANGCI_LINT:-0}" == "1" ]]; then
         log_warning "golangci-lint 已禁用 (DISABLE_GOLANGCI_LINT=1)"
         return 0
     fi
-    ensure_go_tool "golangci-lint" "github.com/golangci/golangci-lint/cmd/golangci-lint" "$version" || log_warning "golangci-lint 安装失败"
+    ensure_go_tool "golangci-lint" "$MTK_GOLANGCI_MODULE" "$MTK_GOLANGCI_VERSION" || log_warning "golangci-lint 安装失败"
 }
 
 # 检查并安装 goimports
@@ -810,6 +843,7 @@ resolve_go_modules() {
     fi
 }
 
+export MTK_GOLANGCI_VERSION MTK_GOLANGCI_MODULE
 export -f log_info log_success log_warning log_error log_step
 export -f add_path_if_missing contains_item ensure_go_tool
 export -f ensure_golangci_lint ensure_goimports ensure_gofumpt
@@ -826,6 +860,7 @@ MTK_EOF_scripts_common_sh_
 # 代码格式化脚本（通用化）
 # 使用 gofumpt（Go 增强格式化）、goimports 和 modernize 将代码升级到最新 Go 风格。
 # 模块列表来自 FORMAT_MODULES / GO_MODULES，留空则自动发现 go.mod。
+# MODERNIZE_VERSION 可钉住 modernize 版本（默认 latest，即 gopls 模块的最新版）。
 
 # 注意：不在全局设置 set -e，以便并发执行时能正确收集错误
 
@@ -837,29 +872,7 @@ PROJECT_ROOT="${PROJECT_ROOT:-$(get_project_root)}"
 
 # 默认配置
 : "${DRY_RUN:=0}"
-
-# 收集模块内所有 Go 目录
-collect_go_dirs() {
-    # 忽略 SIGPIPE 信号，防止管道中断导致 echo 失败
-    trap '' PIPE
-
-    local module="$1"
-    local module_path="$PROJECT_ROOT/$module"
-
-    if [[ ! -d "$module_path" ]]; then
-        return 0
-    fi
-
-    while IFS= read -r dir; do
-        if [[ -n "$dir" && "$dir" != "./e2e"* && "$dir" != "./docs"* && "$dir" != "./query"* ]]; then
-            dir="${dir#./}"
-            if [[ "$dir" != "." && "$dir" != "e2e" && "$dir" != "docs" && "$dir" != "query" ]]; then
-                # 忽略 stderr 并确保失败不会中断脚本
-                echo "$dir" 2>/dev/null || true
-            fi
-        fi
-    done < <(cd "$module_path" && find . -name "*.go" -not -path "./e2e/*" -not -path "./docs/*" -not -path "./query/*" 2>/dev/null | xargs dirname 2>/dev/null | sort -u 2>/dev/null | sed 's|^\./||' 2>/dev/null | sed 's|^$|.|' 2>/dev/null || true)
-}
+: "${MODERNIZE_VERSION:=latest}"
 
 # 对单个模块执行格式化
 format_module() {
@@ -874,19 +887,16 @@ format_module() {
     log_info "模块 $module: 开始代码格式化..."
 
     # 步骤 1: modernize - 升级到最新 Go 风格（可选）
+    # 所有启用的分析器一次跑完（单次 go run，避免重复解析/构建 gopls 模块）
     if [[ "${SKIP_MODERNIZE:-0}" != "1" ]]; then
         log_info "模块 $module: 执行 modernize 代码风格升级..."
-
-        # 优先应用 efaceany 类别（interface{} -> any）
-        if ! (cd "$module_dir" && go run golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@latest -any -fix -test ./...); then
-            log_warning "模块 $module: modernize any 执行失败，继续"
+        local modernize_args=(-any -minmax -slicescontains -slicessort -stringscut -stringscutprefix -forvar -rangeint -test ./...)
+        if [[ "${DRY_RUN}" != "1" ]]; then
+            modernize_args=(-fix "${modernize_args[@]}")
         fi
-
-        # 然后应用其他现代化改进（启用推荐的分析器）
-        if ! (cd "$module_dir" && go run golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@latest \
-            -minmax -slicescontains -slicessort -stringscut -stringscutprefix -forvar -rangeint \
-            -fix -test ./...); then
-            log_warning "模块 $module: modernize 其他类别执行失败，继续"
+        if ! (cd "$module_dir" && go run "golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@${MODERNIZE_VERSION}" \
+            "${modernize_args[@]}"); then
+            log_warning "模块 $module: modernize 执行失败，继续"
         fi
     else
         log_info "模块 $module: modernize 跳过（SKIP_MODERNIZE=1）"
@@ -895,7 +905,11 @@ format_module() {
     # 步骤 2: gofumpt - Go 增强格式化（比 gofmt 更严格）
     log_info "模块 $module: 执行 gofumpt 增强格式化..."
     if command -v gofumpt >/dev/null 2>&1; then
-        if ! (cd "$module_dir" && gofumpt -w .); then
+        local gofumpt_args=(-w .)
+        if [[ "${DRY_RUN}" == "1" ]]; then
+            gofumpt_args=(-d .)
+        fi
+        if ! (cd "$module_dir" && gofumpt "${gofumpt_args[@]}"); then
             log_warning "模块 $module: gofumpt 格式化失败，继续执行其他工具"
         fi
     else
@@ -908,7 +922,11 @@ format_module() {
     # 步骤 3: goimports - 整理导入并自动插入缺失的导入
     if command -v goimports >/dev/null 2>&1; then
         log_info "模块 $module: 执行 goimports 整理导入..."
-        if ! (cd "$module_dir" && goimports -w .); then
+        local goimports_args=(-w .)
+        if [[ "${DRY_RUN}" == "1" ]]; then
+            goimports_args=(-d .)
+        fi
+        if ! (cd "$module_dir" && goimports "${goimports_args[@]}"); then
             log_warning "模块 $module: goimports 执行失败，继续"
         fi
     else
@@ -1004,6 +1022,7 @@ MTK_EOF_scripts_format_code_sh_
 # 代码质量检查脚本（通用化）
 # 执行 go vet 与 golangci-lint（已涵盖 staticcheck、ineffassign 等）。
 # 模块列表来自 GO_MODULES，留空则自动发现 go.mod。
+# QUALITY_EXCLUDE 排除的目录正则（默认 'e2e|docs'，按路径段匹配，同 RACE_EXCLUDE 风格）。
 
 set -e
 
@@ -1014,39 +1033,27 @@ source "$SCRIPT_DIR/common.sh"
 PROJECT_ROOT="${PROJECT_ROOT:-$(get_project_root)}"
 
 # 默认配置
-: "${GOLANGCI_LINT_VERSION:=v1.60.3}"
 : "${GOLANGCI_TIMEOUT:=5m}"
+: "${QUALITY_EXCLUDE:=e2e|docs}"
 
-# 收集模块内所有 Go 目录
-collect_changed_go_dirs() {
-    local module="$1"
-    local module_path="$PROJECT_ROOT/$module"
-
-    if [[ ! -d "$module_path" ]]; then
-        echo "."
-        return 0
-    fi
-
-    local dirs=()
+# 收集模块内待检查的包模式：模块根有 .go 输出 "."，其余含 .go 的目录输出 "./dir/..."；
+# 排除路径段命中 QUALITY_EXCLUDE 的目录，以及 vendor/node_modules/testdata/.git。
+collect_quality_packages() {
+    local module_dir="$1"
+    local dir
     while IFS= read -r dir; do
-        if [[ -n "$dir" && "$dir" != "./e2e"* && "$dir" != "./docs"* && "$dir" != "./query"* ]]; then
-            dir="${dir#./}"
-            if [[ "$dir" != "." && "$dir" != "e2e" && "$dir" != "docs" && "$dir" != "query" ]]; then
-                if ! contains_item "$dir" "${dirs[@]}"; then
-                    dirs+=("$dir")
-                fi
-            fi
+        [[ -z "$dir" ]] && continue
+        if [[ "$dir" == "." ]]; then
+            echo "."
+        else
+            echo "./$dir/..."
         fi
-    done < <(cd "$module_path" && find . -name "*.go" -not -path "./e2e/*" -not -path "./docs/*" -not -path "./query/*" | xargs dirname | sort -u | sed 's|^\./||' | sed 's|^$|.|')
-
-    if [[ ${#dirs[@]} -eq 0 ]]; then
-        echo "."
-    else
-        local d
-        for d in "${dirs[@]}"; do
-            echo "$d"
-        done
-    fi
+    done < <(cd "$module_dir" && \
+        find . \( -name vendor -o -name node_modules -o -name testdata -o -name .git \) -prune -o \
+            -type f -name "*.go" -print 2>/dev/null \
+        | sed 's|/[^/]*$||; s|^\./||' \
+        | sort -u \
+        | grep -Ev "(^|/)(${QUALITY_EXCLUDE})(/|\$)" || true)
 }
 
 # 针对单个 Go 模块执行质量检查
@@ -1060,42 +1067,15 @@ run_go_module_quality_checks() {
 
     log_info "模块 $module: 开始质量检查"
 
-    local dir_targets=()
-    while IFS= read -r dir_line; do
-        if [[ -z "$dir_line" ]]; then
-            continue
-        fi
-        if [[ "$dir_line" == e2e* ]] || [[ "$dir_line" == query* ]]; then
-            continue
-        fi
-        dir_targets+=("$dir_line")
-    done < <(collect_changed_go_dirs "$module")
-
-    if [[ ${#dir_targets[@]} -eq 0 ]]; then
-        dir_targets=(".")
-    fi
-
     local packages=()
-    for dir in "${dir_targets[@]}"; do
-        local pkg
-        if [[ "$dir" == "." ]]; then
-            while IFS= read -r pkg_path; do
-                if [[ -n "$pkg_path" && "$pkg_path" != "./e2e"* && "$pkg_path" != "./docs"* && "$pkg_path" != "./query"* ]]; then
-                    if ! contains_item "$pkg_path" "${packages[@]}"; then
-                        packages+=("$pkg_path")
-                    fi
-                fi
-            done < <(cd "$module_dir" && find . -name "*.go" -not -path "./e2e/*" -not -path "./docs/*" -not -path "./query/*" | xargs dirname | sort -u | sed 's|^\./||' | sed 's|^$|.|' | sed 's|^|./|')
-        else
-            pkg="./$dir/..."
-            if ! contains_item "$pkg" "${packages[@]}"; then
-                packages+=("$pkg")
-            fi
-        fi
-    done
+    local pkg
+    while IFS= read -r pkg; do
+        [[ -n "$pkg" ]] && packages+=("$pkg")
+    done < <(collect_quality_packages "$module_dir")
 
     if [[ ${#packages[@]} -eq 0 ]]; then
-        packages=("./...")
+        log_info "模块 $module: 无待检查的 Go 包（排除 ${QUALITY_EXCLUDE} 后），跳过"
+        return 0
     fi
 
     # 步骤 1: go vet
@@ -1286,6 +1266,8 @@ MTK_EOF_scripts_race_check_sh_
 # 通用化配置：
 #   MODULE_ALIASES   形如 "api=svc-api admin=svc-admin" 的别名映射（空格分隔，可选）
 #   COVERAGE_EXCLUDE 覆盖率/测试包排除正则（默认 '/main$|/cmd|/docs'）
+#   TEST_TIMEOUT     go test 超时（默认 10m）
+#   TEST_PARALLEL    go test -parallel 并行度（默认 1，兼容依赖串行的存量项目）
 
 set -e
 
@@ -1303,8 +1285,9 @@ source "$SCRIPT_DIR/common.sh"
 # 定义变量
 PROJECT_ROOT="${PROJECT_ROOT:-$(get_project_root)}"
 COVERAGE_DIR="$PROJECT_ROOT/coverage_results"
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 GENERATE_COVERAGE=false
+: "${TEST_TIMEOUT:=10m}"
+: "${TEST_PARALLEL:=1}"
 
 # 检查参数（默认启用 short 模式）
 SHORT_MODE=true
@@ -1428,7 +1411,7 @@ run_module_tests() {
     # 用数组承载命令，逐个参数原样传给 go，绝不经过 shell 二次解析。
     # 历史实现把包路径/覆盖率文件名拼成字符串后 eval，导致恶意目录名
     # （如 "$(touch x)"）或含空格/元字符的路径被当作命令执行（命令注入）。
-    local go_test_cmd=(go test -timeout=10m -parallel=1)
+    local go_test_cmd=(go test "-timeout=${TEST_TIMEOUT}" "-parallel=${TEST_PARALLEL}")
     for pkg in "${packages_array[@]}"; do
         go_test_cmd+=("$pkg")
     done
@@ -1438,48 +1421,35 @@ run_module_tests() {
     fi
 
     if [[ "$GENERATE_COVERAGE" == true ]]; then
-        tmp_coverage="$COVERAGE_DIR/${module//\//_}_coverage.out"
+        # 文件名安全化：根模块 "." 会产生以点开头的隐藏文件，改用 root
+        local module_slug="${module//\//_}"
+        [[ "$module_slug" == "." ]] && module_slug="root"
+        tmp_coverage="$COVERAGE_DIR/${module_slug}_coverage.out"
         go_test_cmd+=("-coverprofile=$tmp_coverage")
     fi
 
+    # verbose 直接输出；否则捕获到临时文件，仅失败时过滤噪声后回显
+    local rc=0
     if [[ "$VERBOSE_MODE" == true ]]; then
-        echo -e "${BLUE}正在运行 $module 测试...${NC}"
-        if "${go_test_cmd[@]}"; then
-            echo -e "${GREEN}✓ $module 测试通过${NC}"
-            if [[ "$GENERATE_COVERAGE" == true ]] && [ -f "$tmp_coverage" ]; then
-                local coverage
-                coverage=$(go tool cover -func="$tmp_coverage" 2>/dev/null | tail -1 | awk '{print $NF}' || echo "0%")
-                echo -e "  覆盖率: ${YELLOW}$coverage${NC}"
-                COVERAGE_RESULTS+=("$module: $coverage")
-                local html_file="$COVERAGE_DIR/${module//\//_}_coverage.html"
-                go tool cover -html="$tmp_coverage" -o="$html_file" 2>/dev/null || true
-                echo -e "  HTML 报告: $html_file"
-            fi
-            echo ""
-            return 0
-        else
-            echo -e "${RED}✗ $module 测试失败${NC}"
-            echo ""
-            return 1
+        "${go_test_cmd[@]}" || rc=$?
+    else
+        "${go_test_cmd[@]}" > "$tmp_output" 2>&1 || rc=$?
+    fi
+
+    if [[ $rc -eq 0 ]]; then
+        echo -e "${GREEN}✓ $module 测试通过${NC}"
+        if [[ "$GENERATE_COVERAGE" == true ]] && [ -f "$tmp_coverage" ]; then
+            local coverage
+            coverage=$(go tool cover -func="$tmp_coverage" 2>/dev/null | tail -1 | awk '{print $NF}' || echo "0%")
+            echo -e "  覆盖率: ${YELLOW}$coverage${NC}"
+            COVERAGE_RESULTS+=("$module: $coverage")
+            local html_file="$COVERAGE_DIR/${module_slug}_coverage.html"
+            go tool cover -html="$tmp_coverage" -o="$html_file" 2>/dev/null || true
+            echo -e "  HTML 报告: $html_file"
         fi
     else
-        echo -e "${BLUE}正在运行 $module 测试...${NC}"
-        if "${go_test_cmd[@]}" > "$tmp_output" 2>&1; then
-            echo -e "${GREEN}✓ $module 测试通过${NC}"
-            if [[ "$GENERATE_COVERAGE" == true ]] && [ -f "$tmp_coverage" ]; then
-                local coverage
-                coverage=$(go tool cover -func="$tmp_coverage" 2>/dev/null | tail -1 | awk '{print $NF}' || echo "0%")
-                echo -e "  覆盖率: ${YELLOW}$coverage${NC}"
-                COVERAGE_RESULTS+=("$module: $coverage")
-                local html_file="$COVERAGE_DIR/${module//\//_}_coverage.html"
-                go tool cover -html="$tmp_coverage" -o="$html_file" 2>/dev/null || true
-                echo -e "  HTML 报告: $html_file"
-            fi
-            rm -f "$tmp_output"
-            echo ""
-            return 0
-        else
-            echo -e "${RED}✗ $module 测试失败${NC}"
+        echo -e "${RED}✗ $module 测试失败${NC}"
+        if [[ "$VERBOSE_MODE" != true ]]; then
             # 过滤常见框架噪声（GORM/Redis/logx 等），仅突出失败信息
             awk '
                 /^--- FAIL:/ {print; next}
@@ -1505,14 +1475,14 @@ run_module_tests() {
                 /^[[:space:]]*$/ {next}
                 {print}
             ' "$tmp_output"
-            rm -f "$tmp_output"
-            echo ""
-            return 1
         fi
     fi
+    rm -f "$tmp_output"
+    echo ""
+    return $rc
 }
 
-echo "[1/$(( ${#SELECTED_MODULES[@]} + 1 ))] 准备测试环境..."
+echo "[1/2] 准备测试环境..."
 cd "$PROJECT_ROOT"
 
 echo "当前目录: $(pwd)"
@@ -1520,7 +1490,7 @@ echo "Go 版本: $(go version 2>/dev/null || echo '未检测到 go')"
 echo "模块列表: ${SELECTED_MODULES[*]}"
 echo ""
 
-echo "[2/${#SELECTED_MODULES[@]}] 启动顺序测试..."
+echo "[2/2] 启动顺序测试..."
 
 for i in "${!SELECTED_MODULES[@]}"; do
     module="${SELECTED_MODULES[$i]}"
@@ -1538,9 +1508,6 @@ for i in "${!SELECTED_MODULES[@]}"; do
 
     echo ""
 done
-
-echo -e "${BLUE}所有测试执行完成！${NC}"
-echo ""
 
 echo "╔════════════════════════════════════════════════════════════════╗"
 echo "║              测试总结"
@@ -1804,17 +1771,16 @@ run_trivy() {
            -o -name ".env" -o -name ".env.*" \) \
         -print 2>/dev/null || true)
 
-    # 拼接参数（本机 / 容器分别用绝对路径与 /src 前缀）。
+    # 拼接参数。Trivy 的 --skip-dirs/--skip-files 按相对扫描根的路径匹配
+    # （官方文档示例均为相对路径），绝对路径会静默失配，本机/容器统一传相对路径。
     # 用数组逐参传递，避免含空格/元字符的路径被 word splitting 拆错或注入额外参数。
-    local NATIVE_ARGS=() DOCKER_ARGS=()
+    local TRIVY_SKIP_ARGS=()
     local r
     for r in "${skip_rel[@]}"; do
-        NATIVE_ARGS+=(--skip-dirs "${PROJECT_ROOT}/${r}")
-        DOCKER_ARGS+=(--skip-dirs "/src/${r}")
+        TRIVY_SKIP_ARGS+=(--skip-dirs "$r")
     done
     for r in "${skip_files_rel[@]}"; do
-        NATIVE_ARGS+=(--skip-files "${PROJECT_ROOT}/${r}")
-        DOCKER_ARGS+=(--skip-files "/src/${r}")
+        TRIVY_SKIP_ARGS+=(--skip-files "$r")
     done
 
     local scan_rc=0
@@ -1823,7 +1789,7 @@ run_trivy() {
         set +e
         trivy fs --scanners "${scanners}" --no-progress --ignore-unfixed --exit-code 1 --severity "${severity}" \
             --cache-dir "$trivy_cache_dir" \
-            "${NATIVE_ARGS[@]}" \
+            "${TRIVY_SKIP_ARGS[@]}" \
             "${PROJECT_ROOT}"
         scan_rc=$?
         set -e
@@ -1831,9 +1797,12 @@ run_trivy() {
         local trivy_image="${TRIVY_IMAGE:-aquasec/trivy:latest}"
         log_info "使用 Trivy 容器扫描 (${trivy_image})"
         set +e
-        docker run --rm -v "${PROJECT_ROOT}:/src" -w /src "${trivy_image}" \
+        docker run --rm \
+            -v "${PROJECT_ROOT}:/src" \
+            -v "${trivy_cache_dir}:/root/.cache/trivy" \
+            -w /src "${trivy_image}" \
             fs --scanners "${scanners}" --no-progress --ignore-unfixed --exit-code 1 --severity "${severity}" \
-            "${DOCKER_ARGS[@]}" \
+            "${TRIVY_SKIP_ARGS[@]}" \
             /src
         scan_rc=$?
         set -e

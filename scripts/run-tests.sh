@@ -7,6 +7,8 @@
 # 通用化配置：
 #   MODULE_ALIASES   形如 "api=svc-api admin=svc-admin" 的别名映射（空格分隔，可选）
 #   COVERAGE_EXCLUDE 覆盖率/测试包排除正则（默认 '/main$|/cmd|/docs'）
+#   TEST_TIMEOUT     go test 超时（默认 10m）
+#   TEST_PARALLEL    go test -parallel 并行度（默认 1，兼容依赖串行的存量项目）
 
 set -e
 
@@ -24,8 +26,9 @@ source "$SCRIPT_DIR/common.sh"
 # 定义变量
 PROJECT_ROOT="${PROJECT_ROOT:-$(get_project_root)}"
 COVERAGE_DIR="$PROJECT_ROOT/coverage_results"
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 GENERATE_COVERAGE=false
+: "${TEST_TIMEOUT:=10m}"
+: "${TEST_PARALLEL:=1}"
 
 # 检查参数（默认启用 short 模式）
 SHORT_MODE=true
@@ -149,7 +152,7 @@ run_module_tests() {
     # 用数组承载命令，逐个参数原样传给 go，绝不经过 shell 二次解析。
     # 历史实现把包路径/覆盖率文件名拼成字符串后 eval，导致恶意目录名
     # （如 "$(touch x)"）或含空格/元字符的路径被当作命令执行（命令注入）。
-    local go_test_cmd=(go test -timeout=10m -parallel=1)
+    local go_test_cmd=(go test "-timeout=${TEST_TIMEOUT}" "-parallel=${TEST_PARALLEL}")
     for pkg in "${packages_array[@]}"; do
         go_test_cmd+=("$pkg")
     done
@@ -159,48 +162,35 @@ run_module_tests() {
     fi
 
     if [[ "$GENERATE_COVERAGE" == true ]]; then
-        tmp_coverage="$COVERAGE_DIR/${module//\//_}_coverage.out"
+        # 文件名安全化：根模块 "." 会产生以点开头的隐藏文件，改用 root
+        local module_slug="${module//\//_}"
+        [[ "$module_slug" == "." ]] && module_slug="root"
+        tmp_coverage="$COVERAGE_DIR/${module_slug}_coverage.out"
         go_test_cmd+=("-coverprofile=$tmp_coverage")
     fi
 
+    # verbose 直接输出；否则捕获到临时文件，仅失败时过滤噪声后回显
+    local rc=0
     if [[ "$VERBOSE_MODE" == true ]]; then
-        echo -e "${BLUE}正在运行 $module 测试...${NC}"
-        if "${go_test_cmd[@]}"; then
-            echo -e "${GREEN}✓ $module 测试通过${NC}"
-            if [[ "$GENERATE_COVERAGE" == true ]] && [ -f "$tmp_coverage" ]; then
-                local coverage
-                coverage=$(go tool cover -func="$tmp_coverage" 2>/dev/null | tail -1 | awk '{print $NF}' || echo "0%")
-                echo -e "  覆盖率: ${YELLOW}$coverage${NC}"
-                COVERAGE_RESULTS+=("$module: $coverage")
-                local html_file="$COVERAGE_DIR/${module//\//_}_coverage.html"
-                go tool cover -html="$tmp_coverage" -o="$html_file" 2>/dev/null || true
-                echo -e "  HTML 报告: $html_file"
-            fi
-            echo ""
-            return 0
-        else
-            echo -e "${RED}✗ $module 测试失败${NC}"
-            echo ""
-            return 1
+        "${go_test_cmd[@]}" || rc=$?
+    else
+        "${go_test_cmd[@]}" > "$tmp_output" 2>&1 || rc=$?
+    fi
+
+    if [[ $rc -eq 0 ]]; then
+        echo -e "${GREEN}✓ $module 测试通过${NC}"
+        if [[ "$GENERATE_COVERAGE" == true ]] && [ -f "$tmp_coverage" ]; then
+            local coverage
+            coverage=$(go tool cover -func="$tmp_coverage" 2>/dev/null | tail -1 | awk '{print $NF}' || echo "0%")
+            echo -e "  覆盖率: ${YELLOW}$coverage${NC}"
+            COVERAGE_RESULTS+=("$module: $coverage")
+            local html_file="$COVERAGE_DIR/${module_slug}_coverage.html"
+            go tool cover -html="$tmp_coverage" -o="$html_file" 2>/dev/null || true
+            echo -e "  HTML 报告: $html_file"
         fi
     else
-        echo -e "${BLUE}正在运行 $module 测试...${NC}"
-        if "${go_test_cmd[@]}" > "$tmp_output" 2>&1; then
-            echo -e "${GREEN}✓ $module 测试通过${NC}"
-            if [[ "$GENERATE_COVERAGE" == true ]] && [ -f "$tmp_coverage" ]; then
-                local coverage
-                coverage=$(go tool cover -func="$tmp_coverage" 2>/dev/null | tail -1 | awk '{print $NF}' || echo "0%")
-                echo -e "  覆盖率: ${YELLOW}$coverage${NC}"
-                COVERAGE_RESULTS+=("$module: $coverage")
-                local html_file="$COVERAGE_DIR/${module//\//_}_coverage.html"
-                go tool cover -html="$tmp_coverage" -o="$html_file" 2>/dev/null || true
-                echo -e "  HTML 报告: $html_file"
-            fi
-            rm -f "$tmp_output"
-            echo ""
-            return 0
-        else
-            echo -e "${RED}✗ $module 测试失败${NC}"
+        echo -e "${RED}✗ $module 测试失败${NC}"
+        if [[ "$VERBOSE_MODE" != true ]]; then
             # 过滤常见框架噪声（GORM/Redis/logx 等），仅突出失败信息
             awk '
                 /^--- FAIL:/ {print; next}
@@ -226,14 +216,14 @@ run_module_tests() {
                 /^[[:space:]]*$/ {next}
                 {print}
             ' "$tmp_output"
-            rm -f "$tmp_output"
-            echo ""
-            return 1
         fi
     fi
+    rm -f "$tmp_output"
+    echo ""
+    return $rc
 }
 
-echo "[1/$(( ${#SELECTED_MODULES[@]} + 1 ))] 准备测试环境..."
+echo "[1/2] 准备测试环境..."
 cd "$PROJECT_ROOT"
 
 echo "当前目录: $(pwd)"
@@ -241,7 +231,7 @@ echo "Go 版本: $(go version 2>/dev/null || echo '未检测到 go')"
 echo "模块列表: ${SELECTED_MODULES[*]}"
 echo ""
 
-echo "[2/${#SELECTED_MODULES[@]}] 启动顺序测试..."
+echo "[2/2] 启动顺序测试..."
 
 for i in "${!SELECTED_MODULES[@]}"; do
     module="${SELECTED_MODULES[$i]}"
@@ -259,9 +249,6 @@ for i in "${!SELECTED_MODULES[@]}"; do
 
     echo ""
 done
-
-echo -e "${BLUE}所有测试执行完成！${NC}"
-echo ""
 
 echo "╔════════════════════════════════════════════════════════════════╗"
 echo "║              测试总结"

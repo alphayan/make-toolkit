@@ -54,6 +54,10 @@ done
 TARGET="${TARGET:-$PWD}"
 if [[ ! -d "$TARGET" ]]; then echo "目标目录不存在: $TARGET" >&2; exit 1; fi
 TARGET="$(cd "$TARGET" && pwd)"
+if [[ "$VENDOR_SUBDIR" == "." || "$VENDOR_SUBDIR" == /* || "$VENDOR_SUBDIR" =~ (^|/)\.\.(/|$) ]]; then
+  echo "--into 必须是目标项目内的相对子目录: $VENDOR_SUBDIR" >&2
+  exit 1
+fi
 DEST="$TARGET/$VENDOR_SUBDIR"
 HEADER
 
@@ -79,7 +83,8 @@ echo '  mkdir -p "$DEST/scripts"' >> "$OUT"
 emit() {
   local rel="$1" src="$2"
   # 注:echo 末尾换行经 tr 变为 marker 尾部 '_';勿改成 printf '%s' 否则标记不一致
-  local marker="MTK_EOF_$(echo "$rel" | tr -c 'A-Za-z0-9' '_')"
+  local marker
+  marker="MTK_EOF_$(echo "$rel" | tr -c 'A-Za-z0-9' '_')"
   {
     echo "  mkdir -p \"\$(dirname \"\$DEST/$rel\")\""
     echo "  cat > \"\$DEST/$rel\" <<'$marker'"

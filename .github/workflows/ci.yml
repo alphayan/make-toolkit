@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    name: ShellCheck 与语法检查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: bash -n 语法检查
+        run: |
+          for f in scripts/*.sh installer/body.sh build-installer.sh install.sh tests/smoke.sh; do
+            bash -n "$f"
+          done
+      - name: shellcheck
+        run: |
+          command -v shellcheck >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck; }
+          shellcheck -S warning scripts/*.sh installer/body.sh build-installer.sh install.sh tests/smoke.sh
+
+  smoke:
+    name: 冒烟测试（${{ matrix.os }}）
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+      - name: 冒烟测试（含 install.sh 同步校验）
+        run: bash tests/smoke.sh

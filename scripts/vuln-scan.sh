@@ -110,17 +110,16 @@ run_trivy() {
            -o -name ".env" -o -name ".env.*" \) \
         -print 2>/dev/null || true)
 
-    # 拼接参数（本机 / 容器分别用绝对路径与 /src 前缀）。
+    # 拼接参数。Trivy 的 --skip-dirs/--skip-files 按相对扫描根的路径匹配
+    # （官方文档示例均为相对路径），绝对路径会静默失配，本机/容器统一传相对路径。
     # 用数组逐参传递，避免含空格/元字符的路径被 word splitting 拆错或注入额外参数。
-    local NATIVE_ARGS=() DOCKER_ARGS=()
+    local TRIVY_SKIP_ARGS=()
     local r
     for r in "${skip_rel[@]}"; do
-        NATIVE_ARGS+=(--skip-dirs "${PROJECT_ROOT}/${r}")
-        DOCKER_ARGS+=(--skip-dirs "/src/${r}")
+        TRIVY_SKIP_ARGS+=(--skip-dirs "$r")
     done
     for r in "${skip_files_rel[@]}"; do
-        NATIVE_ARGS+=(--skip-files "${PROJECT_ROOT}/${r}")
-        DOCKER_ARGS+=(--skip-files "/src/${r}")
+        TRIVY_SKIP_ARGS+=(--skip-files "$r")
     done
 
     local scan_rc=0
@@ -129,7 +128,7 @@ run_trivy() {
         set +e
         trivy fs --scanners "${scanners}" --no-progress --ignore-unfixed --exit-code 1 --severity "${severity}" \
             --cache-dir "$trivy_cache_dir" \
-            "${NATIVE_ARGS[@]}" \
+            "${TRIVY_SKIP_ARGS[@]}" \
             "${PROJECT_ROOT}"
         scan_rc=$?
         set -e
@@ -137,9 +136,12 @@ run_trivy() {
         local trivy_image="${TRIVY_IMAGE:-aquasec/trivy:latest}"
         log_info "使用 Trivy 容器扫描 (${trivy_image})"
         set +e
-        docker run --rm -v "${PROJECT_ROOT}:/src" -w /src "${trivy_image}" \
+        docker run --rm \
+            -v "${PROJECT_ROOT}:/src" \
+            -v "${trivy_cache_dir}:/root/.cache/trivy" \
+            -w /src "${trivy_image}" \
             fs --scanners "${scanners}" --no-progress --ignore-unfixed --exit-code 1 --severity "${severity}" \
-            "${DOCKER_ARGS[@]}" \
+            "${TRIVY_SKIP_ARGS[@]}" \
             /src
         scan_rc=$?
         set -e

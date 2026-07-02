@@ -37,7 +37,7 @@ else
     if [[ "$INCLUDE_TESTS" == "1" ]]; then
         GO_FILES=$(count -name "*.go")
     else
-        GO_FILES=$(find . -name "*.go" ! -path "*/.git/*" ! -path "*/vendor/*" ! -name "*_test.go" 2>/dev/null | wc -l | tr -d ' ')
+        GO_FILES=$(count -name "*.go" ! -name "*_test.go")
     fi
     TS_FILES=$(count \( -name "*.ts" -o -name "*.tsx" \))
     JS_FILES=$(count -name "*.js")

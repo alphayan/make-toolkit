@@ -58,6 +58,7 @@ bash install.sh --skip-doctor /path/to/your-project    # 跳过装前环境自�
 4. **忽略生成物**：把 `coverage_results/`、`.build-cache/` 加进 `.gitignore`。
 
 可重复运行以更新脚本（幂等）。彩色输出在非 TTY、`NO_COLOR`、`TERM=dumb` 或 `--no-color` 下自动降级为纯文本。
+`--into` 只接受目标项目内的相对子目录（如 `make-toolkit`、`tools/mtk`），会拒绝绝对路径或 `..` 越界路径。
 
 > `install.sh` 由 `build-installer.sh` 从本仓库源文件（`scripts/ui.sh` + `scripts/common.sh` + `installer/body.sh` + `quality.mk` + `scripts/*.sh`）生成；改了源文件后重跑 `bash build-installer.sh` 重新打包即可。
 
@@ -96,6 +97,7 @@ make lint     # quality-check + scan
 | `TEST_MODULES` | = `GO_MODULES` | 仅覆盖测试的模块列表 |
 | `MODULE_ALIASES` | 空 | 测试友好别名，如 `api=svc-api admin=svc-admin` |
 | `COVERAGE_EXCLUDE` | `/main$\|/cmd\|/docs` | 测试时排除的包路径正则 |
+| `QUALITY_EXCLUDE` | `e2e\|docs` | quality-check 排除的目录正则（按路径段匹配） |
 | `VULN_SEVERITY` | `CRITICAL,HIGH` | Trivy 严重级别过滤 |
 | `TRIVY_SCANNERS` | `vuln` | Trivy 扫描器，可加 `secret`、`misconfig` |
 | `TRIVY_SKIP_DIRS` | 空 | 额外跳过的目录（已默认跳过 node_modules/dist/vendor/.git） |
@@ -103,6 +105,10 @@ make lint     # quality-check + scan
 | `RACE_TIMEOUT` | `5m` | race 单包超时 |
 | `RACE_EXCLUDE` | `e2e\|docs` | race 排除的包路径正则 |
 | `GOLANGCI_TIMEOUT` | `5m` | golangci-lint 超时 |
+| `GOLANGCI_LINT_VERSION` | `v2.12.2` | golangci-lint 版本；`v1.*` 自动改用 v1 模块路径（如 `v1.64.8`） |
+| `TEST_TIMEOUT` | `10m` | go test 超时 |
+| `TEST_PARALLEL` | `1` | go test `-parallel` 并行度（默认串行，兼容依赖串行的项目） |
+| `MODERNIZE_VERSION` | `latest` | 钉住 modernize（gopls 模块）版本，离线/可复现构建用 |
 
 **开关**：`SKIP_VULN=1`（跳过漏洞扫描）、`SKIP_CHECKS=1`（跳过质量检查）、
 `DISABLE_GOLANGCI_LINT=1`、`SKIP_MODERNIZE=1`（格式化时跳过风格升级）。
@@ -121,7 +127,8 @@ make lint     # quality-check + scan
 - **Go**（govulncheck/go vet/go test 必需）；`govulncheck`、`gofumpt`、`goimports`、`golangci-lint` 缺失时脚本会尝试 `go install`。
 - **Trivy**：`brew install trivy`，或装 Docker 用容器回退（都没有则跳过 Trivy 那步）。
 - **cloc**（可选）：`brew install cloc`；缺失时 `make cloc` 退化为文件计数。
-- golangci-lint 读取**消费方项目自己的** `.golangci.yml`。
+- golangci-lint 读取**消费方项目自己的** `.golangci.yml`。默认安装 **v2**（配置文件需为 v2 格式，
+  v1 配置可用 `golangci-lint migrate` 迁移）；存量项目想留在 v1 可设 `GOLANGCI_LINT_VERSION=v1.64.8`。
 
 ## 不用 make 也能跑
 
